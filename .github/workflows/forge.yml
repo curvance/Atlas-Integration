@@ -13,13 +13,28 @@ jobs:
       ETH_NODE_URI_BASE: ${{ secrets.ETH_NODE_URI_BASE }}
       ETH_NODE_URI_MONAD: ${{ secrets.ETH_NODE_URI_MONAD }}
     steps:
-      - name: Configure git for private submodules
-        run: git config --global url."https://${{ secrets.ATLAS_PAT_TOKEN }}@github.com/".insteadOf "https://github.com/"
-
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
-          submodules: recursive
           token: ${{ secrets.ATLAS_PAT_TOKEN }}
+
+      - name: Setup Git credentials for submodules
+        run: |
+          git config --global credential.helper store
+          echo "https://x-access-token:${{ secrets.ATLAS_PAT_TOKEN }}@github.com" > ~/.git-credentials
+          git config --global user.email "action@github.com"
+          git config --global user.name "GitHub Action"
+
+      - name: Debug submodule info
+        run: |
+          echo "Listing .gitmodules:"
+          cat .gitmodules
+          echo "Git submodule status:"
+          git submodule status
+          echo "Attempting submodule update..."
+
+      - name: Checkout submodules
+        run: |
+          git submodule update --init --recursive
 
       - name: Install dependencies
         run: yarn install --immutable || true
