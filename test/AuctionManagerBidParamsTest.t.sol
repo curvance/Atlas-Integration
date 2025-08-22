@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {BaseTest} from "lib/atlas/test/base/BaseTest.t.sol";
 import { TestBaseMarketIsolated } from "tests/market/TestBaseMarketIsolated.sol";
-import { AuctionManager } from "contracts/architecture/AuctionManager.sol";
+import { AuctionManager } from "src/AuctionManager.sol";
 import {ICentralRegistry} from "contracts/interfaces/ICentralRegistry.sol";
 
 contract AuctionManagerBidParamsTest is BaseTest, TestBaseMarketIsolated {

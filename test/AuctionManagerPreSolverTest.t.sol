@@ -16,7 +16,7 @@ import {AtlasEvents} from "@atlas/contracts/types/AtlasEvents.sol";
 import {SolverOutcome} from "@atlas/contracts/types/EscrowTypes.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {ICentralRegistry} from "contracts/interfaces/ICentralRegistry.sol";
-import { AuctionManager } from "contracts/architecture/AuctionManager.sol";
+import { AuctionManager } from "src/AuctionManager.sol";
 
 import { BorrowableCToken } from "contracts/market/token/BorrowableCToken.sol";
 import { console2 } from "forge-std/console2.sol";

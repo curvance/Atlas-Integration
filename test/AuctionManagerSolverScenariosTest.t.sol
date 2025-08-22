@@ -10,7 +10,7 @@ import "@atlas/contracts/types/DAppOperation.sol";
 import "@atlas/contracts/types/AtlasErrors.sol";
 import {SolverBase} from "@atlas/contracts/solver/SolverBase.sol";
 import {ICentralRegistry} from "contracts/interfaces/ICentralRegistry.sol";
-import { AuctionManager } from "contracts/architecture/AuctionManager.sol";
+import { AuctionManager } from "src/AuctionManager.sol";
 import { TestBaseMarketIsolated } from "tests/market/TestBaseMarketIsolated.sol";
 import {AtlasEvents} from "@atlas/contracts/types/AtlasEvents.sol";
 import {SolverOutcome} from "@atlas/contracts/types/EscrowTypes.sol";
