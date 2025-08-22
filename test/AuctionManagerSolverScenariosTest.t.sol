@@ -10,7 +10,7 @@ import "@atlas/contracts/types/DAppOperation.sol";
 import "@atlas/contracts/types/AtlasErrors.sol";
 import {SolverBase} from "@atlas/contracts/solver/SolverBase.sol";
 import {ICentralRegistry} from "contracts/interfaces/ICentralRegistry.sol";
-import { AuctionManager } from "src/AuctionManager.sol";
+import { AuctionManager } from "contracts/architecture/AuctionManager.sol";
 import { TestBaseMarketIsolated } from "tests/market/TestBaseMarketIsolated.sol";
 import {AtlasEvents} from "@atlas/contracts/types/AtlasEvents.sol";
 import {SolverOutcome} from "@atlas/contracts/types/EscrowTypes.sol";
@@ -31,7 +31,7 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
     uint256 public constant OEV_SHARE_FASTLANE = 1000; // 10%
     uint32 public constant SOLVER_GAS_LIMIT = 6_000_000;
     uint256 solverBidAmount = 1 ether;
-    uint256 solverOpTestPenalty = 0.1e18;
+    uint256 solverOpTestPenalty = 10100;
 
     uint256 auctioneerPK = 0xabcdef;
     address auctioneer = vm.addr(auctioneerPK);
@@ -45,7 +45,25 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
     address mockCurvanceGov = address(0xf11);
 
     function setUp() public override(BaseTest, TestBaseMarketIsolated) {
-        super.setUp();
+        // Initialize Curvance test harness
+        TestBaseMarketIsolated.setUp();
+
+        // Initialize Atlas harness
+        __createAndLabelAccounts();
+        __deployAtlasContracts();
+        __fundSolversAndDepositAtlETH();
+
+        vm.startPrank(centralRegistry.daoAddress());
+        _prepareDAI(centralRegistry.daoAddress(), 77777 * 2);
+        _prepareUSDC(centralRegistry.daoAddress(), 77777 * 2);
+        dai.approve(address(borrowableCDAI), 77777);
+        usdc.approve(address(borrowableCUSDC), 77777);
+        marketManagerIsolated.listTokens(address(borrowableCDAI), address(borrowableCUSDC));
+        _setCTokenConfigBasic(address(borrowableCDAI), 1_000_000e18, 1_000_000e18);
+        _setCTokenConfigBasic(address(borrowableCUSDC), 1_000_000e6, 1_000_000e6);
+        vm.stopPrank();
+
+        collateralToken = address(borrowableCUSDC);
 
         vm.startPrank(governanceEOA);
         dappControl = new AuctionManager(
@@ -54,22 +72,19 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
             OEV_SHARE_FASTLANE,
             OEV_ALLOCATION_DESTINATION_FASTLANE,
             OEV_ALLOCATION_DESTINATION_PROTOCOL,
-            6000
+            2000
         );
 
         dappControl.setAuthorizedUserOpSigner(userOpSigner);
         atlasVerification.initializeGovernance(address(dappControl));
         atlasVerification.addSignatory(address(dappControl), auctioneer);
-        // Set up mock contracts
-        address executionEnv = dappControl.authorizedExecutionEnv();
-        centralRegistry.addAuctionPermissions(executionEnv);
-
         vm.stopPrank();
 
-        // vm.startPrank(mockCurvanceGov);
-        // centralRegistry.setDAppControl(address(dappControl));
-        // marketManagerIsolated.addAuthorizedAtlasDAppControl(address(dappControl));
-        // vm.stopPrank();
+        address executionEnv = dappControl.authorizedExecutionEnv();
+        vm.startPrank(centralRegistry.emergencyCouncil());
+        centralRegistry.addAuctionPermissions(executionEnv);
+        centralRegistry.addAuctionPermissions(address(dappControl));
+        vm.stopPrank();
 
         vm.prank(solverOneEOA);
         solver = new MockSolver(address(WETH_ADDRESS), address(atlas));
@@ -94,7 +109,7 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
     function testInitialization() public view {
         assertEq(dappControl.fastlaneRevenueDestination(), OEV_ALLOCATION_DESTINATION_FASTLANE);
         assertEq(dappControl.curvanceRevenueDestination(), OEV_ALLOCATION_DESTINATION_PROTOCOL);
-        assertEq(dappControl.fastlaneSplitBPS(), OEV_SHARE_BUNDLER);
+        assertEq(dappControl.fastlaneSplitBPS(), OEV_SHARE_FASTLANE);
         assertEq(dappControl.solverGasLimit(), SOLVER_GAS_LIMIT);
         assertEq(dappControl.authorizedUserOpSigner(), userOpSigner);
         assertEq(address(dappControl.CENTRAL_REGISTRY()), address(centralRegistry));
@@ -306,13 +321,8 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
         );
         if (solverOneBidPaid + solverTwoBidPaid + solverThreeBidPaid > 0) {
             uint256 totalOev = solverOneBidPaid + solverTwoBidPaid + solverThreeBidPaid;
-            vm.expectEmit(executionEnv);
-            emit AuctionManager.RevenueDistributed(
-                totalOev * OEV_SHARE_FASTLANE / 10_000,
-                totalOev - (totalOev * OEV_SHARE_FASTLANE / 10_000),
-                OEV_ALLOCATION_DESTINATION_FASTLANE,
-                OEV_ALLOCATION_DESTINATION_PROTOCOL
-            );
+            vm.expectEmit(address(dappControl));
+            emit AuctionManager.RevenueAllocated(totalOev);
         }
         vm.expectEmit(true, true, true, false, address(atlas));
         emit AtlasEvents.MetacallResult(bundler, userOpSigner, false, 0, 0);
@@ -739,9 +749,9 @@ contract MockSolver is SolverBase {
 
     constructor(address weth, address atlas) SolverBase(weth, atlas, msg.sender) {}
 
-    function solve() external pure {}
+    function solve(uint256 penalty, address collateral, address market) external pure {}
 
-    function solveRevert() external pure {
+    function solveRevert(uint256 penalty, address collateral, address market) external pure {
         revert("Atlas OEV is not allowed");
     }
 }

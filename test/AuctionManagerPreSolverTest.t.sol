@@ -16,9 +16,10 @@ import {AtlasEvents} from "@atlas/contracts/types/AtlasEvents.sol";
 import {SolverOutcome} from "@atlas/contracts/types/EscrowTypes.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {ICentralRegistry} from "contracts/interfaces/ICentralRegistry.sol";
-import {AuctionManager} from "src/AuctionManager.sol";
+import { AuctionManager } from "contracts/architecture/AuctionManager.sol";
 
 import { BorrowableCToken } from "contracts/market/token/BorrowableCToken.sol";
+import { console2 } from "forge-std/console2.sol";
 
 contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIsolated {
 
@@ -35,7 +36,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
     uint256 public constant OEV_SHARE_FASTLANE = 1000; // 10%
     uint32 public constant SOLVER_GAS_LIMIT = 6_000_000;
     uint256 solverBidAmount = 1 ether;
-    uint256 solverOpTestPenalty = 0.1e18;
+    uint256 solverOpTestPenalty = 10100;
 
     uint256 auctioneerPK = 0xabcdef;
     address auctioneer = vm.addr(auctioneerPK);
@@ -49,32 +50,40 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
     address mockCurvanceGov = address(0xf11);
 
     function setUp() public override(BaseTest, TestBaseMarketIsolated) {
-        super.setUp();
+        // Initialize Curvance test harness
+        TestBaseMarketIsolated.setUp();
 
-        vm.startPrank(mockCurvanceGov);
+        // Initialize Atlas test harness
+        __createAndLabelAccounts();
+        __deployAtlasContracts();
+        __fundSolversAndDepositAtlETH();
+
+        vm.startPrank(centralRegistry.daoAddress());
         
-        _prepareDAI(address(this), 77777 * 2);
-        _prepareUSDC(address(this), 77777 * 2);
+        _prepareDAI(centralRegistry.daoAddress(), 77777 * 2);
+        _prepareUSDC(centralRegistry.daoAddress(), 77777 * 2);
         dai.approve(address(borrowableCDAI), 77777);
         usdc.approve(address(borrowableCUSDC), 77777);
         marketManagerIsolated.listTokens(address(borrowableCDAI), address(borrowableCUSDC));
         _setCTokenConfigBasic(address(borrowableCDAI), 1_000_000e18, 1_000_000e18);
         _setCTokenConfigBasic(address(borrowableCUSDC), 1_000_000e6, 1_000_000e6);
 
-
         // Create unauthorized market manager (not registered in central registry)
         unauthorizedMarketManager = new MarketManagerIsolated(ICentralRegistry(address(centralRegistry)));
-
-        BorrowableCToken phonyCUSDC = _deployBorrowableCToken(address(usdc));
-        BorrowableCToken phonyCDAI = _deployBorrowableCToken(address(dai));
-
-        dai.approve(address(phonyCDAI), 77777);
-        usdc.approve(address(phonyCUSDC), 77777);
-        unauthorizedMarketManager.listTokens(address(phonyCDAI), address(phonyCUSDC));
 
         vm.stopPrank();
 
         vm.startPrank(governanceEOA);
+
+
+        auctionManager = new AuctionManager(
+            address(atlas),
+            ICentralRegistry(address(centralRegistry)),
+            OEV_SHARE_FASTLANE,
+            OEV_ALLOCATION_DESTINATION_FASTLANE,
+            OEV_ALLOCATION_DESTINATION_PROTOCOL,
+            2000
+        );
 
         auctionManager.setAuthorizedUserOpSigner(userOpSigner);
         atlasVerification.initializeGovernance(address(auctionManager));
@@ -85,10 +94,16 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
 
         vm.startPrank(governanceEOA);
         address executionEnv = auctionManager.authorizedExecutionEnv();
+        vm.startPrank(centralRegistry.emergencyCouncil());
         centralRegistry.addAuctionPermissions(executionEnv);
-
-        // Don't authorize the second market manager
+        centralRegistry.addAuctionPermissions(address(auctionManager));
         vm.stopPrank();
+
+        // check permissions are set
+        bool hasExecEnvPerms = centralRegistry.hasAuctionPermissions(executionEnv);
+        bool hasControlPerms = centralRegistry.hasAuctionPermissions(address(auctionManager));
+        assertTrue(hasExecEnvPerms, "execution env perms not set");
+        assertTrue(hasControlPerms, "control perms not set");
 
         vm.prank(solverOneEOA);
         solver = new MockSolver(address(WETH_ADDRESS), address(atlas));
@@ -228,14 +243,6 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
 
         // First, configure invalidCollateral in the market manager so it's "valid"
         vm.prank(mockCurvanceGov);
-        // marketManager.addMockToken(
-        //     invalidCollateral,
-        //     0.8e18, // collRatio - same as collateralToken
-        //     0.05e18, // liqIncMin
-        //     0.15e18, // liqIncMax
-        //     4e6, // closeFactorMin
-        //     5e6 // closeFactorMax
-        // );
 
         UserOperation memory userOp = buildUserOperation(userOpSignerPK);
 
@@ -244,7 +251,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(WETH_ADDRESS),
             address(atlas),
             marketManagerIsolated, // Pass the contract directly, not address
-            collateralToken // This is what it will try to liquidate (different from solver data)
+            address(borrowableCUSDC) // Try to liquidate a different listed token than unlocked
         );
 
         vm.deal(address(mismatchSolver), 10 * solverBidAmount);
@@ -254,8 +261,8 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(mismatchSolver),
             atlasVerification.getUserOperationHash(userOp),
             solverBidAmount,
-            solverOpTestPenalty,
-            invalidCollateral, // This gets unlocked in preSolverCall
+            10100,
+            address(borrowableCUSDC),
             address(marketManagerIsolated),
             false
         );
@@ -595,8 +602,8 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(solver),
             userOpHash,
             solverBidAmount,
-            0.1e18, // Valid penalty (10% - within 5%-15% range)
-            collateralToken,
+            10100, // 10% penalty
+            address(borrowableCUSDC),
             address(marketManagerIsolated),
             false
         );
