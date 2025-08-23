@@ -24,6 +24,7 @@ import { console2 } from "forge-std/console2.sol";
 contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIsolated {
 
     MarketManagerIsolated public unauthorizedMarketManager;
+    AuctionManager public auctionManager_;
 
     address public collateralToken = address(0xccccccc);
     address public invalidCollateral = address(0xbbbbbbb);
@@ -76,7 +77,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         vm.startPrank(governanceEOA);
 
 
-        auctionManager = new AuctionManager(
+        auctionManager_ = new AuctionManager(
             address(atlas),
             ICentralRegistry(address(centralRegistry)),
             OEV_SHARE_FASTLANE,
@@ -85,23 +86,23 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             2000
         );
 
-        auctionManager.setAuthorizedUserOpSigner(userOpSigner);
-        atlasVerification.initializeGovernance(address(auctionManager));
-        atlasVerification.addSignatory(address(auctionManager), auctioneer);
+        auctionManager_.setAuthorizedUserOpSigner(userOpSigner);
+        atlasVerification.initializeGovernance(address(auctionManager_));
+        atlasVerification.addSignatory(address(auctionManager_), auctioneer);
 
         // Grant control the user op signer wallet
         vm.stopPrank();
 
         vm.startPrank(governanceEOA);
-        address executionEnv = auctionManager.authorizedExecutionEnv();
+        address executionEnv = auctionManager_.authorizedExecutionEnv();
         vm.startPrank(centralRegistry.emergencyCouncil());
         centralRegistry.addAuctionPermissions(executionEnv);
-        centralRegistry.addAuctionPermissions(address(auctionManager));
+        centralRegistry.addAuctionPermissions(address(auctionManager_));
         vm.stopPrank();
 
         // check permissions are set
         bool hasExecEnvPerms = centralRegistry.hasAuctionPermissions(executionEnv);
-        bool hasControlPerms = centralRegistry.hasAuctionPermissions(address(auctionManager));
+        bool hasControlPerms = centralRegistry.hasAuctionPermissions(address(auctionManager_));
         assertTrue(hasExecEnvPerms, "execution env perms not set");
         assertTrue(hasControlPerms, "control perms not set");
 
@@ -148,7 +149,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         emit AtlasEvents.SolverTxResult(
             address(solver),
             solverOneEOA,
-            address(auctionManager),
+            address(auctionManager_),
             address(0),
             solverBidAmount,
             false, // executed = false (PreSolver failed)
@@ -211,7 +212,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         emit AtlasEvents.SolverTxResult(
             address(solver),
             solverOneEOA,
-            address(auctionManager),
+            address(auctionManager_),
             address(0),
             solverBidAmount,
             false, // executed = false (PreSolver failed due to unauthorized collateral)
@@ -284,7 +285,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         emit AtlasEvents.SolverTxResult(
             address(mismatchSolver),
             solverOneEOA,
-            address(auctionManager),
+            address(auctionManager_),
             address(0),
             solverBidAmount,
             true, // executed = true (preSolver passed, but solver reverted)
@@ -359,7 +360,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         emit AtlasEvents.SolverTxResult(
             address(solver),
             solverOneEOA,
-            address(auctionManager),
+            address(auctionManager_),
             address(0),
             solverBidAmount,
             false, // executed = false (PreSolver failed)
@@ -398,7 +399,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             maxFeePerGas: 1_000_000_000,
             deadline: block.number + 100,
             solver: address(solver),
-            control: address(auctionManager),
+            control: address(auctionManager_),
             userOpHash: userOpHash,
             bidToken: address(0),
             bidAmount: solverBidAmount,
@@ -476,7 +477,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
 
     function testPreSolverCall_zeroPenalty_preSolverFails() public {
         UserOperation memory userOp = buildUserOperation(userOpSignerPK);
-        address executionEnv = auctionManager.authorizedExecutionEnv();
+        address executionEnv = auctionManager_.authorizedExecutionEnv();
 
         bytes32 userOpHash = atlasVerification.getUserOperationHash(userOp);
         SolverOperation memory solverOp = buildSolverOperation(
@@ -506,7 +507,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         emit AtlasEvents.SolverTxResult(
             address(solver),
             solverOneEOA,
-            address(auctionManager),
+            address(auctionManager_),
             address(0),
             solverBidAmount,
             false, // executed = false (didn't execute due to PreSolver failure)
@@ -571,7 +572,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         emit AtlasEvents.SolverTxResult(
             address(solver),
             solverOneEOA,
-            address(auctionManager),
+            address(auctionManager_),
             address(0),
             solverBidAmount,
             false, // executed = false
@@ -622,7 +623,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         emit AtlasEvents.SolverTxResult(
             address(solver),
             solverOneEOA,
-            address(auctionManager),
+            address(auctionManager_),
             address(0),
             solverBidAmount,
             true, // executed = true
@@ -658,14 +659,14 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             maxFeePerGas: 1_000_000_000,
             nonce: 1,
             deadline: block.number + 100,
-            dapp: address(auctionManager),
-            control: address(auctionManager),
-            callConfig: auctionManager.CALL_CONFIG(),
+            dapp: address(auctionManager_),
+            control: address(auctionManager_),
+            callConfig: auctionManager_.CALL_CONFIG(),
             dappGasLimit: 2_000_000,
             solverGasLimit: SOLVER_GAS_LIMIT,
             bundlerSurchargeRate: 1000,
             sessionKey: auctioneer,
-            data: abi.encodeWithSelector(auctionManager.initiateAuction.selector),
+            data: abi.encodeWithSelector(auctionManager_.initiateAuction.selector),
             signature: new bytes(0)
         });
 
@@ -701,7 +702,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             maxFeePerGas: 1_000_000_000,
             deadline: block.number + 100,
             solver: solverContract,
-            control: address(auctionManager),
+            control: address(auctionManager_),
             userOpHash: userOpHash,
             bidToken: address(0),
             bidAmount: bidAmount,
@@ -725,7 +726,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             to: address(atlas),
             nonce: 0,
             deadline: block.number + 100,
-            control: address(auctionManager),
+            control: address(auctionManager_),
             bundler: givenBundler,
             userOpHash: userOpHash,
             callChainHash: callChainHash,
