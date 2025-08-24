@@ -1,3 +1,5 @@
+<p style="text-align: center;width:100%"> <img src="https://pbs.twimg.com/profile_banners/1445781144125857796/1752160592"/></p>
+
 # AuctionManager
 
 ## Overview
@@ -154,3 +156,11 @@ The final ordering of the solvers in multiple successful solvers would then be:
 5. Solver G: bidding for BTC/USD market and BTC as collateral at 1% penalty.
 6. Solver E: bidding for BTC/USD market and BTC as collateral at 2% penalty.
 7. Solver F: bidding for BTC/USD market and USD as collateral at 1% penalty.
+
+## Additional Information
+
+For additional context on Curvance liquidation structure please review `README.md` inside contracts/markets/isolated/ inside the `curvance-contracts` repository.
+
+*Last updated: 8/24/2025*
+
+*Maintained by: Curvance Core Team*
