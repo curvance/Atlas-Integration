@@ -16,8 +16,100 @@ import {AtlasEvents} from "@atlas/contracts/types/AtlasEvents.sol";
 import {SolverOutcome} from "@atlas/contracts/types/EscrowTypes.sol";
 import {Vm} from "forge-std/Vm.sol";
 
+// Mock Aggregator V3 Interface
+interface AggregatorV3Interface {
+    function decimals() external view returns (uint8);
+    function description() external view returns (string memory);
+    function version() external view returns (uint256);
+    function getRoundData(uint80 _roundId)
+        external
+        view
+        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
+    function latestRoundData()
+        external
+        view
+        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
+    function latestRound() external view returns (uint256);
+}
+
+// Mock Chainlink Feed for testing
+contract MockChainlinkFeed is AggregatorV3Interface {
+    uint8 public override decimals = 8;
+    string public override description = "Mock ETH/USD Feed";
+    uint256 public override version = 1;
+
+    uint80 private _latestRoundId = 100;
+    int256 private _latestAnswer = 2000e8; // $2000
+    uint256 private _latestTimestamp = block.timestamp;
+
+    function latestRoundData()
+        external
+        view
+        override
+        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)
+    {
+        return (_latestRoundId, _latestAnswer, _latestTimestamp, _latestTimestamp, _latestRoundId);
+    }
+
+    function getRoundData(uint80 _roundId)
+        external
+        view
+        override
+        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)
+    {
+        return (_roundId, _latestAnswer, _latestTimestamp, _latestTimestamp, _roundId);
+    }
+
+    function latestRound() external view override returns (uint256) {
+        return _latestRoundId;
+    }
+
+    // Helper function to update the mock feed
+    function setLatestAnswer(int256 newAnswer) external {
+        _latestAnswer = newAnswer;
+        _latestRoundId++;
+        _latestTimestamp = block.timestamp;
+    }
+}
+
+// Simplified FastlaneWrapper for testing
+contract FastlaneWrapperMock {
+    AggregatorV3Interface public originalFeed;
+    uint256 public cachedRoundId;
+    mapping(address => bool) public whitelist;
+
+    event PriceUpdatedEarly(address indexed updater, uint256 roundId);
+
+    constructor(address _originalFeed) {
+        originalFeed = AggregatorV3Interface(_originalFeed);
+        cachedRoundId = originalFeed.latestRound();
+    }
+
+    function updatePriceEarly() external {
+        require(whitelist[msg.sender], "Not whitelisted");
+
+        (uint256 latestRoundId, int256 latestAnswer,, uint256 latestUpdatedAt, uint80 latestAnsweredInRound) =
+            originalFeed.latestRoundData();
+
+        // Basic validation
+        require(latestAnswer > 0, "Invalid price");
+        require(latestUpdatedAt != 0, "Round incomplete");
+
+        if (latestRoundId > cachedRoundId) {
+            cachedRoundId = latestRoundId;
+            emit PriceUpdatedEarly(msg.sender, latestRoundId);
+        }
+    }
+
+    function setWhitelist(address account, bool isWhitelisted) external {
+        whitelist[account] = isWhitelisted;
+    }
+}
+
 contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolated, BaseTest {
     AuctionManager public dappControl;
+    FastlaneWrapperMock public fastlaneWrapper;
+    MockChainlinkFeed public mockFeed;
 
     address public collateralToken = address(0xccccccc);
 
@@ -85,6 +177,20 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
         centralRegistry.addAuctionPermissions(address(dappControl));
         vm.stopPrank();
 
+        // Deploy mock Chainlink feed and FastlaneWrapper
+        mockFeed = new MockChainlinkFeed();
+        fastlaneWrapper = new FastlaneWrapperMock(address(mockFeed));
+
+        vm.startPrank(governanceEOA);
+
+        // Whitelist the FastlaneWrapper as an oracle
+        dappControl.addOracleToWhitelist(address(fastlaneWrapper));
+
+        // Whitelist the dapp control (AuctionManager) in the FastlaneWrapper
+        fastlaneWrapper.setWhitelist(address(dappControl), true);
+
+        vm.stopPrank();
+
         vm.prank(solverOneEOA);
         solver = new MockSolver(address(WETH_ADDRESS), address(atlas));
         vm.deal(address(solver), 10 * solverBidAmount);
@@ -115,6 +221,9 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
     }
 
     function buildUserOperation(uint256 signerPK) internal view returns (UserOperation memory) {
+        // Encode the update call with FastlaneWrapper's updatePriceEarly
+        bytes memory updateCallData = abi.encodeWithSelector(FastlaneWrapperMock.updatePriceEarly.selector);
+
         address signer = vm.addr(signerPK);
         UserOperation memory userOp = UserOperation({
             from: signer,
@@ -131,7 +240,11 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
             solverGasLimit: SOLVER_GAS_LIMIT,
             bundlerSurchargeRate: 1000,
             sessionKey: auctioneer,
-            data: abi.encodeWithSelector(dappControl.initiateAuction.selector),
+            data: abi.encodeWithSelector(
+                dappControl.update.selector,
+                address(fastlaneWrapper),
+                updateCallData
+            ),
             signature: new bytes(0)
         });
 
@@ -329,6 +442,8 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
         (bool success, bytes memory returnData) = address(atlas).call{gas: 21_100_000}(
             abi.encodeWithSelector(atlas.metacall.selector, userOp, solverOps, dappOp, address(0))
         );
+
+        vm.stopBroadcast();
 
         // Retrieve and decode logs.
         Vm.Log[] memory logs = vm.getRecordedLogs();

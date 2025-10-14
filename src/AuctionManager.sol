@@ -15,6 +15,7 @@ import { SafeTransferLib } from "contracts/libraries/external/SafeTransferLib.so
 import { ICentralRegistry } from "contracts/interfaces/ICentralRegistry.sol";
 import { IRedstoneProxy } from "contracts/interfaces/external/redstone/IRedstoneProxy.sol";
 import { IMarketManager } from "contracts/interfaces/IMarketManager.sol";
+import { ChainlinkCurvanceOEVWrapper } from "./ChainlinkCurvanceOEVWrapper.sol";
 
 /// @title AuctionManager
 /// @author Fastlane Labs
@@ -265,7 +266,8 @@ contract AuctionManager is DAppControl {
         // Set Oracle related configurations.
         allowedSelectors[IRedstoneProxy.updateDataFeedsValues.selector] = true;
         allowedSelectors[IRedstoneProxy.updateDataFeedsValuesPartial.selector] = true;
-        allowedSelectorsCount = 2;
+        allowedSelectors[ChainlinkCurvanceOEVWrapper.updatePriceEarly.selector] = true;
+        allowedSelectorsCount = 3;
 
         emit RevenueShareSet(0, fastlaneSplitBPS_, 0, BPS - fastlaneSplitBPS_);
         emit FastlaneRevenueDestinationSet(address(0), fastlaneDestination_);
