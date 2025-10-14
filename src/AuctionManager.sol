@@ -48,11 +48,7 @@ contract AuctionManager is DAppControl {
     /// @notice Share of revenue allocated to Fastlane Labs, in BPS.
     uint16 public fastlaneSplitBPS;
 
-    /// SOLVER CONFIG 
-
-    /// @notice Liquidation close factor used for Auction-based liquidations,
-    ///         in BPS.
-    uint16 public atlasCloseFactor;
+    /// SOLVER CONFIG
 
     /// @notice Maximum gas limit allowed for each solver operation.
     uint32 public solverGasLimit = 6_000_000;
@@ -133,11 +129,6 @@ contract AuctionManager is DAppControl {
     /// @param newSolverGasLimit The new solver gas limit.
     event SolverGasLimitSet(uint32 oldSolverGasLimit, uint32 newSolverGasLimit);
 
-    /// @notice Emitted when the Atlas close factor is updated.
-    /// @param oldCloseFactor Previous close factor, in BPS.
-    /// @param newCloseFactor New close factor, in BPS.
-    event AtlasCloseFactorSet(uint256 oldCloseFactor, uint256 newCloseFactor);
-
     /// @notice Emitted when the authorized user operation signer is updated.
     /// @param oldAuthorizedUserOpSigner Previous authorized signer.
     /// @param newAuthorizedUserOpSigner New authorized signer.
@@ -176,9 +167,6 @@ contract AuctionManager is DAppControl {
     
     /// @notice Thrown when revenue allocation destination is zero address.
     error AuctionManager__InvalidDestination();
-
-    /// @notice Thrown when close factor is invalid (zero or exceeds 100%).
-    error AuctionManager__InvalidCloseFactor();
 
     // ORACLE RELATED ERRORS
 
@@ -226,15 +214,12 @@ contract AuctionManager is DAppControl {
     ///                             share.
     /// @param curvanceDestination_ Address to receive Curvance Protocol's
     ///                             revenue share.
-    /// @param atlasCloseFactor_ Initial close factor for auction-based
-    ///                          liquidations, in BPS.
     constructor(
         address atlas,
         ICentralRegistry centralRegistry_,
         uint256 fastlaneSplitBPS_,
         address fastlaneDestination_,
-        address curvanceDestination_,
-        uint256 atlasCloseFactor_
+        address curvanceDestination_
     )
         DAppControl(
             atlas,
@@ -270,11 +255,9 @@ contract AuctionManager is DAppControl {
         if (fastlaneSplitBPS_ > BPS) revert AuctionManager__InvalidRevenueConfig();
         if (fastlaneDestination_ == address(0)) revert AuctionManager__InvalidDestination();
         if (curvanceDestination_ == address(0)) revert AuctionManager__InvalidDestination();
-        if (atlasCloseFactor_ == 0 || atlasCloseFactor_ > BPS) revert AuctionManager__InvalidCloseFactor();
         fastlaneSplitBPS = uint16(fastlaneSplitBPS_);
         fastlaneRevenueDestination = fastlaneDestination_;
         curvanceRevenueDestination = curvanceDestination_;
-        atlasCloseFactor = uint16(atlasCloseFactor_);
 
         // Set `CENTRAL_REGISTRY`.
         CENTRAL_REGISTRY = centralRegistry_;
@@ -353,22 +336,10 @@ contract AuctionManager is DAppControl {
     /// @param solverGasLimit_ New gas limit for solvers.
     function setSolverGasLimit(uint32 solverGasLimit_) external {
         _checkIsGovernor();
-        
+
         uint32 old = solverGasLimit;
         solverGasLimit = solverGasLimit_;
         emit SolverGasLimitSet(old, solverGasLimit_);
-    }
-
-    /// @notice Updates the close factor used for auction-based liquidations.
-    /// @dev Close factor must be greater than 0 and not exceed 100% (BPS).
-    /// @param atlasCloseFactor_ New close factor, in BPS.
-    function setAtlasCloseFactor(uint256 atlasCloseFactor_) external {
-        _checkIsGovernor();
-        
-        if (atlasCloseFactor_ == 0 || atlasCloseFactor_ > BPS) revert AuctionManager__InvalidCloseFactor();
-        uint256 old = atlasCloseFactor;
-        atlasCloseFactor = uint16(atlasCloseFactor_);
-        emit AtlasCloseFactorSet(old, atlasCloseFactor_);
     }
 
     /// @notice Sets the authorized signer for user operations.
@@ -422,13 +393,12 @@ contract AuctionManager is DAppControl {
     ///      Sets dynamic risk parameters and unlocks collateral for liquidation.
     /// @param marketManager Address of the market manager to liquidate inside.
     /// @param cToken Address of the collateral token to be liquidated.
-    /// @param newPenalty New liquidation penalty to apply.
-    function preSolverSetup(address marketManager, address cToken, uint256 newPenalty) external {
+    function preSolverSetup(address marketManager, address cToken) external {
         _checkAuthorizedExecutionEnv();
         if (!CENTRAL_REGISTRY.isMarketManager(marketManager)) revert AuctionManager__InvalidMarketManager();
 
         // Set dynamic risk parameters and unlock `cToken` collateral for auction-based liquidation.
-        IMarketManager(marketManager).setTransientLiquidationConfig(cToken, newPenalty, atlasCloseFactor);
+        IMarketManager(marketManager).setTransientLiquidationConfig(cToken, 0, 0);
 
         // Unlock `marketManager`.
         CENTRAL_REGISTRY.unlockAuctionForMarket(marketManager);
@@ -578,25 +548,23 @@ contract AuctionManager is DAppControl {
     /// INTERNAL FUNCTIONS ///
 
     /// @notice Extracts bid parameters from solver operation data.
-    /// @dev Expects the last 96 bytes of solverOpData to contain bid
+    /// @dev Expects the last 64 bytes of solverOpData to contain bid
     ///      information.
     /// @param solverOpData Raw solver operation data.
-    /// @return penaltyBid The liquidation penalty bid amount.
     /// @return collateralBid Address of the collateral token being bid on.
     /// @return market Address of the market where liquidation occurs.
     function _getBidParamsFromSolverOpData(
         bytes calldata solverOpData
     ) internal pure returns (
-        uint256 penaltyBid,
         address collateralBid,
         address market
     ) {
-        if (solverOpData.length < 96) revert AuctionManager__MalformedSolverOperation();
+        if (solverOpData.length < 64) revert AuctionManager__MalformedSolverOperation();
 
-        // Isolate the bid data - the last 96 bytes of the solverOpData, then
-        // decode the tail bid data into (penaltyBid, collateralBid, market)
-        (penaltyBid, collateralBid, market) =
-            abi.decode(solverOpData[solverOpData.length - 96:], (uint256, address, address));
+        // Isolate the bid data - the last 64 bytes of the solverOpData, then
+        // decode the tail bid data into (collateralBid, market)
+        (collateralBid, market) =
+            abi.decode(solverOpData[solverOpData.length - 64:], (address, address));
     }
 
     // ---------------------------------------------------- //
@@ -642,14 +610,14 @@ contract AuctionManager is DAppControl {
     ///         collateral, and updates risk parameters.
     /// @dev This function is delegateCalled from the Atlas execution
     ///      environment.
-    /// @param solverOp The solver operation containing bid parameters. 
+    /// @param solverOp The solver operation containing bid parameters.
     function _preSolverCall(
         SolverOperation calldata solverOp,
         bytes calldata
     ) internal override {
-        (uint256 newPenalty, address collateralBid, address market) =
+        (address collateralBid, address market) =
             _getBidParamsFromSolverOpData(solverOp.data);
-        AuctionManager(CONTROL).preSolverSetup(market, collateralBid, newPenalty);
+        AuctionManager(CONTROL).preSolverSetup(market, collateralBid);
     }
 
     /// @notice Accumulates revenue in native gas tokens for later

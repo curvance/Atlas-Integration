@@ -71,8 +71,7 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
             ICentralRegistry(address(centralRegistry)),
             OEV_SHARE_FASTLANE,
             OEV_ALLOCATION_DESTINATION_FASTLANE,
-            OEV_ALLOCATION_DESTINATION_PROTOCOL,
-            2000
+            OEV_ALLOCATION_DESTINATION_PROTOCOL
         );
 
         dappControl.setAuthorizedUserOpSigner(userOpSigner);
@@ -147,16 +146,15 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
         address solverContract,
         bytes32 userOpHash,
         uint256 bidAmount,
-        uint256 penaltyBid,
         address collateral,
         address market,
         bool isReverting
     ) internal view returns (SolverOperation memory) {
         bytes memory data;
         if (isReverting) {
-            data = abi.encodeWithSelector(solver.solveRevert.selector, penaltyBid, collateral, market);
+            data = abi.encodeWithSelector(solver.solveRevert.selector, collateral, market);
         } else {
-            data = abi.encodeWithSelector(solver.solve.selector, penaltyBid, collateral, market);
+            data = abi.encodeWithSelector(solver.solve.selector, collateral, market);
         }
 
         address solverEoa = vm.addr(solverPK);
@@ -227,7 +225,6 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
             address(solver),
             userOpHash,
             solverOne.bidAmount,
-            solverOne.testPenalty,
             solverOne.collateral,
             solverOne.market,
             solverOne.isReverting
@@ -237,7 +234,6 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
             address(solver2),
             userOpHash,
             solverTwo.bidAmount,
-            solverTwo.testPenalty,
             solverTwo.collateral,
             solverTwo.market,
             solverTwo.isReverting
@@ -247,7 +243,6 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
             address(solver3),
             userOpHash,
             solverThree.bidAmount,
-            solverThree.testPenalty,
             solverThree.collateral,
             solverThree.market,
             solverThree.isReverting
@@ -749,9 +744,9 @@ contract MockSolver is SolverBase {
 
     constructor(address weth, address atlas) SolverBase(weth, atlas, msg.sender) {}
 
-    function solve(uint256 penalty, address collateral, address market) external pure {}
+    function solve(address collateral, address market) external pure {}
 
-    function solveRevert(uint256 penalty, address collateral, address market) external pure {
+    function solveRevert(address collateral, address market) external pure {
         revert("Atlas OEV is not allowed");
     }
 }

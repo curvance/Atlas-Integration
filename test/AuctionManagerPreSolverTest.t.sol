@@ -82,8 +82,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             ICentralRegistry(address(centralRegistry)),
             OEV_SHARE_FASTLANE,
             OEV_ALLOCATION_DESTINATION_FASTLANE,
-            OEV_ALLOCATION_DESTINATION_PROTOCOL,
-            2000
+            OEV_ALLOCATION_DESTINATION_PROTOCOL
         );
 
         auctionManager_.setAuthorizedUserOpSigner(userOpSigner);
@@ -125,7 +124,6 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(solver),
             atlasVerification.getUserOperationHash(userOp),
             solverBidAmount,
-            solverOpTestPenalty,
             collateralToken,
             address(unauthorizedMarketManager), // Use unauthorized market
             false // not reverting
@@ -188,7 +186,6 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(solver),
             atlasVerification.getUserOperationHash(userOp),
             solverBidAmount,
-            solverOpTestPenalty,
             invalidCollateral, // This collateral is NOT configured in market manager
             address(marketManagerIsolated),
             false
@@ -262,7 +259,6 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(mismatchSolver),
             atlasVerification.getUserOperationHash(userOp),
             solverBidAmount,
-            10100,
             address(borrowableCUSDC),
             address(marketManagerIsolated),
             false
@@ -337,7 +333,6 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(solver),
             atlasVerification.getUserOperationHash(userOp),
             solverBidAmount,
-            penalty, // Use invalid penalty value
             collateralToken,
             address(marketManagerIsolated),
             false
@@ -444,7 +439,6 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(solver),
             atlasVerification.getUserOperationHash(userOp),
             solverBidAmount,
-            solverOpTestPenalty,
             collateralToken,
             address(marketManagerIsolated),
             false
@@ -485,7 +479,6 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(solver),
             userOpHash,
             solverBidAmount,
-            0, // Zero penalty - should fail validation
             collateralToken,
             address(marketManagerIsolated),
             false
@@ -550,7 +543,6 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(solver),
             userOpHash,
             solverBidAmount,
-            type(uint256).max, // Max penalty - should fail validation
             collateralToken,
             address(marketManagerIsolated),
             false
@@ -603,7 +595,6 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(solver),
             userOpHash,
             solverBidAmount,
-            10100, // 10% penalty
             address(borrowableCUSDC),
             address(marketManagerIsolated),
             false
@@ -681,16 +672,15 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         address solverContract,
         bytes32 userOpHash,
         uint256 bidAmount,
-        uint256 penaltyBid,
         address collateral,
         address market,
         bool isReverting
     ) internal view returns (SolverOperation memory) {
         bytes memory data;
         if (isReverting) {
-            data = abi.encodeWithSelector(solver.solveRevert.selector, penaltyBid, collateral, market);
+            data = abi.encodeWithSelector(solver.solveRevert.selector, collateral, market);
         } else {
-            data = abi.encodeWithSelector(solver.solve.selector, penaltyBid, collateral, market);
+            data = abi.encodeWithSelector(solver.solve.selector, collateral, market);
         }
 
         address solverEoa = vm.addr(solverPK);
@@ -746,11 +736,11 @@ contract MockSolver is SolverBase {
 
     constructor(address weth, address atlas) SolverBase(weth, atlas, msg.sender) {}
 
-    function solve(uint256 penalty, address collateral, address market) external pure {
+    function solve(address collateral, address market) external pure {
         // Mock function - intentionally empty
     }
 
-    function solveRevert(uint256 penalty, address collateral, address market) external pure {
+    function solveRevert(address collateral, address market) external pure {
         revert("Atlas OEV is not allowed");
     }
 }
@@ -773,7 +763,7 @@ contract MockSolverWithCollateralMismatch is SolverBase, TestBaseMarketIsolated 
         wrongCollateralToLiquidate = _wrongCollateralToLiquidate;
     }
 
-    function solve(uint256 penalty, address collateral, address market) external {
+    function solve(address collateral, address market) external {
         // The solver data has 'collateral' (which got unlocked in preSolverCall)
         // But we'll try to liquidate 'wrongCollateralToLiquidate' instead
         // This should trigger the _UNAUTHORIZED_LIQUIDATION_SELECTOR in _checkLiquidationConfig
@@ -809,10 +799,10 @@ contract MockSolverWithCollateralMismatch is SolverBase, TestBaseMarketIsolated 
             borrowers,
             wrongCollateralToLiquidate
         );
-            
+
     }
 
-    function solveRevert(uint256 penalty, address collateral, address market) external pure {
+    function solveRevert(address collateral, address market) external pure {
         revert("Atlas OEV is not allowed");
     }
 }
