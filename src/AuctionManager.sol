@@ -184,9 +184,6 @@ contract AuctionManager is DAppControl {
 
     /// @notice Thrown when solver operation data is malformed.
     error AuctionManager__MalformedSolverOperation();
-    
-    /// @notice Thrown when Market Manager is not registered.
-    error AuctionManager__InvalidMarketManager();
 
     /// CONSTRUCTOR /// 
 
@@ -396,13 +393,13 @@ contract AuctionManager is DAppControl {
     /// @param cToken Address of the collateral token to be liquidated.
     function preSolverSetup(address marketManager, address cToken) external {
         _checkAuthorizedExecutionEnv();
-        if (!CENTRAL_REGISTRY.isMarketManager(marketManager)) revert AuctionManager__InvalidMarketManager();
 
-        // Set dynamic risk parameters and unlock `cToken` collateral for auction-based liquidation.
-        IMarketManager(marketManager).setTransientLiquidationConfig(cToken, 0, 0);
-
-        // Unlock `marketManager`.
+        // Unlock `marketManager` for auction-based liquidations.
         CENTRAL_REGISTRY.unlockAuctionForMarket(marketManager);
+
+        // Set dynamic risk parameters and unlock `cToken` collateral for
+        // auction-based liquidations.
+        IMarketManager(marketManager).setTransientLiquidationConfig(cToken, 0, 0);
     }
 
     /// @notice Accumulates revenue internally for later distribution.
