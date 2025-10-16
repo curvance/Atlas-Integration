@@ -197,8 +197,7 @@ contract AuctionManager is DAppControl {
     ///                         and auctioneer validation.
     /// - requirePreSolver: true - Enables pre-solver hook for dynamic risk
     ///                            parameter updates and collateral unlocking.
-    /// - zeroSolvers: false - Allows oracle updates without solvers
-    ///                        (no OEV capture).
+    /// - zeroSolvers: false - Does not allow oracle updates without solvers.
     /// - userAuctioneer: false - Restricts auctioneers to those whitelisted
     ///                           via AtlasVerification.
     /// - requireFulfillment: false - Ensures oracle updates proceed even if
