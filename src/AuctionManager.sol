@@ -200,8 +200,8 @@ contract AuctionManager is DAppControl {
     /// - zeroSolvers: false - Does not allow oracle updates without solvers.
     /// - userAuctioneer: false - Restricts auctioneers to those whitelisted
     ///                           via AtlasVerification.
-    /// - requireFulfillment: false - Ensures oracle updates proceed even if
-    ///                               all solvers fail.
+    /// - requireFulfillment: false - Oracle updates do not proceed if all
+    ///                               solvers fail.
     /// - multipleSuccessfulSolvers: true - Enables app-specific ordering
     ///                                     rules for parallel solver
     ///                                     execution.
