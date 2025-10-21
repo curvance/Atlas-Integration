@@ -17,6 +17,8 @@ import {SolverOutcome} from "@atlas/contracts/types/EscrowTypes.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {ICentralRegistry} from "contracts/interfaces/ICentralRegistry.sol";
 import { AuctionManager } from "src/AuctionManager.sol";
+import { ChainlinkWrapperEntrypoint } from "src/ChainlinkWrapperEntrypoint.sol";
+import { ChainlinkCurvanceOEVWrapper } from "src/ChainlinkCurvanceOEVWrapper.sol";
 
 import { BorrowableCToken } from "contracts/market/token/BorrowableCToken.sol";
 import { console2 } from "forge-std/console2.sol";
@@ -77,45 +79,15 @@ contract MockChainlinkFeed is AggregatorV3Interface {
     }
 }
 
-// Simplified FastlaneWrapper for testing
-contract FastlaneWrapperMock {
-    AggregatorV3Interface public originalFeed;
-    uint256 public cachedRoundId;
-    mapping(address => bool) public whitelist;
-
-    event PriceUpdatedEarly(address indexed updater, uint256 roundId);
-
-    constructor(address _originalFeed) {
-        originalFeed = AggregatorV3Interface(_originalFeed);
-        cachedRoundId = originalFeed.latestRound();
-    }
-
-    function updatePriceEarly() external {
-        require(whitelist[msg.sender], "Not whitelisted");
-
-        (uint256 latestRoundId, int256 latestAnswer,, uint256 latestUpdatedAt, uint80 latestAnsweredInRound) =
-            originalFeed.latestRoundData();
-
-        // Basic validation
-        require(latestAnswer > 0, "Invalid price");
-        require(latestUpdatedAt != 0, "Round incomplete");
-
-        if (latestRoundId > cachedRoundId) {
-            cachedRoundId = latestRoundId;
-            emit PriceUpdatedEarly(msg.sender, latestRoundId);
-        }
-    }
-
-    function setWhitelist(address account, bool isWhitelisted) external {
-        whitelist[account] = isWhitelisted;
-    }
-}
 
 contract AuctionManagerFastlaneWrapperTest is BaseTest, AtlasErrors, TestBaseMarketIsolated {
     MarketManagerIsolated public unauthorizedMarketManager;
     AuctionManager public auctionManager_;
-    FastlaneWrapperMock public fastlaneWrapper;
-    MockChainlinkFeed public mockFeed;
+    ChainlinkWrapperEntrypoint public wrapperEntrypoint;
+    ChainlinkCurvanceOEVWrapper public wrapper1;
+    ChainlinkCurvanceOEVWrapper public wrapper2;
+    MockChainlinkFeed public mockFeed1;
+    MockChainlinkFeed public mockFeed2;
 
     address public collateralToken = address(0xccccccc);
 
@@ -183,20 +155,39 @@ contract AuctionManagerFastlaneWrapperTest is BaseTest, AtlasErrors, TestBaseMar
         centralRegistry.addAuctionPermissions(address(auctionManager_));
         vm.stopPrank();
 
-        // Deploy mock Chainlink feed and FastlaneWrapper
-        mockFeed = new MockChainlinkFeed();
-        fastlaneWrapper = new FastlaneWrapperMock(address(mockFeed));
+        // Deploy mock Chainlink feeds and real wrappers
+        mockFeed1 = new MockChainlinkFeed();
+        mockFeed2 = new MockChainlinkFeed();
+
+        wrapper1 = new ChainlinkCurvanceOEVWrapper(
+            address(mockFeed1),
+            governanceEOA,
+            3, // maxDecrements
+            10 // maxRoundDelay
+        );
+
+        wrapper2 = new ChainlinkCurvanceOEVWrapper(
+            address(mockFeed2),
+            governanceEOA,
+            3, // maxDecrements
+            10 // maxRoundDelay
+        );
+
+        // Deploy the wrapper entrypoint
+        wrapperEntrypoint = new ChainlinkWrapperEntrypoint(governanceEOA);
 
         vm.startPrank(governanceEOA);
 
-        // Whitelist the FastlaneWrapper as an oracle
-        auctionManager_.addOracleToWhitelist(address(fastlaneWrapper));
+        // Configure wrappers in the entrypoint
+        wrapperEntrypoint.configureWrapper(address(wrapper1), true);
+        wrapperEntrypoint.configureWrapper(address(wrapper2), true);
 
-        // Whitelist the updatePriceEarly selector
-        auctionManager_.addAllowedSelector(FastlaneWrapperMock.updatePriceEarly.selector);
+        // Whitelist the wrapper entrypoint as an oracle
+        auctionManager_.addOracleToWhitelist(address(wrapperEntrypoint));
 
-        // Whitelist the dapp control (AuctionManager) in the FastlaneWrapper
-        fastlaneWrapper.setWhitelist(address(auctionManager_), true);
+        // Whitelist the AuctionManager in both wrappers
+        wrapper1.setWhitelist(address(wrapperEntrypoint), true);
+        wrapper2.setWhitelist(address(wrapperEntrypoint), true);
 
         vm.stopPrank();
 
@@ -211,9 +202,10 @@ contract AuctionManagerFastlaneWrapperTest is BaseTest, AtlasErrors, TestBaseMar
         collateralToken = address(borrowableCUSDC);
     }
 
-    function testFastlaneWrapper_updatePriceEarly() public {
-        // Update the mock feed to have a new round
-        mockFeed.setLatestAnswer(2100e8); // New price and increments roundId to 101
+    function testFastlaneWrapper_batchUpdatePriceEarly() public {
+        // Update the mock feeds to have new rounds
+        mockFeed1.setLatestAnswer(2100e8); // New price and increments roundId to 101
+        mockFeed2.setLatestAnswer(1800e8); // New price and increments roundId to 101
 
         UserOperation memory userOp = buildUserOperation(userOpSignerPK);
 
@@ -237,9 +229,12 @@ contract AuctionManagerFastlaneWrapperTest is BaseTest, AtlasErrors, TestBaseMar
         vm.deal(bundler, 2 ether);
         vm.txGasPrice(1 gwei);
 
-        // Expect the PriceUpdatedEarly event with the correct values
-        vm.expectEmit(true, true, false, false, address(fastlaneWrapper));
-        emit FastlaneWrapperMock.PriceUpdatedEarly(address(auctionManager_), 101);
+        // Expect PriceUpdatedEarly events from both wrappers
+        vm.expectEmit(true, true, false, true, address(wrapper1));
+        emit ChainlinkCurvanceOEVWrapper.PriceUpdatedEarly(address(wrapperEntrypoint), 101);
+
+        vm.expectEmit(true, true, false, true, address(wrapper2));
+        emit ChainlinkCurvanceOEVWrapper.PriceUpdatedEarly(address(wrapperEntrypoint), 101);
 
         vm.startBroadcast(bundlerPK);
 
@@ -250,11 +245,15 @@ contract AuctionManagerFastlaneWrapperTest is BaseTest, AtlasErrors, TestBaseMar
         vm.stopBroadcast();
 
         assertTrue(success, "metacall should succeed");
+
+        // Verify both wrappers were updated
+        assertEq(wrapper1.cachedRoundId(), 101, "Wrapper1 should have updated round ID");
+        assertEq(wrapper2.cachedRoundId(), 101, "Wrapper2 should have updated round ID");
     }
 
     function buildUserOperation(uint256 signerPK) internal view returns (UserOperation memory userOp) {
-        // Encode the update call with FastlaneWrapper's updatePriceEarly
-        bytes memory updateCallData = abi.encodeWithSelector(FastlaneWrapperMock.updatePriceEarly.selector);
+        // Encode the batch update call with the entrypoint's batchUpdatePriceEarly
+        bytes memory updateCallData = abi.encodeWithSelector(ChainlinkWrapperEntrypoint.batchUpdatePriceEarly.selector);
 
         userOp = UserOperation({
             from: vm.addr(signerPK),
@@ -273,7 +272,7 @@ contract AuctionManagerFastlaneWrapperTest is BaseTest, AtlasErrors, TestBaseMar
             sessionKey: address(auctioneer),
             data: abi.encodeWithSelector(
                 auctionManager_.update.selector,
-                address(fastlaneWrapper),
+                address(wrapperEntrypoint),
                 updateCallData
             ),
             signature: new bytes(0)

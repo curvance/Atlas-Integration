@@ -13,9 +13,8 @@ import { BPS } from "contracts/libraries/ConstantsLib.sol";
 import { SafeTransferLib } from "contracts/libraries/external/SafeTransferLib.sol";
 
 import { ICentralRegistry } from "contracts/interfaces/ICentralRegistry.sol";
-import { IRedstoneProxy } from "contracts/interfaces/external/redstone/IRedstoneProxy.sol";
 import { IMarketManager } from "contracts/interfaces/IMarketManager.sol";
-import { ChainlinkCurvanceOEVWrapper } from "./ChainlinkCurvanceOEVWrapper.sol";
+import { ChainlinkWrapperEntrypoint } from "./ChainlinkWrapperEntrypoint.sol";
 
 /// @title AuctionManager
 /// @author Fastlane Labs
@@ -26,8 +25,8 @@ import { ChainlinkCurvanceOEVWrapper } from "./ChainlinkCurvanceOEVWrapper.sol";
 ///         auctions on Curvance; enabling Curvance to implement
 ///         application-specific ordering rules for liquidations using dynamic
 ///         risk parameters. The DappControl also functions as a whitelisted
-///         data feed updater for RedStone oracles in order to ensure seamless
-///         priority access to liquidations. 
+///         caller for Chainlink OEV wrapper batch updates in order to ensure
+///         seamless priority access to liquidations.
 /// @dev Uses the Atlas framework for handling of auction execution and solver
 ///      ordering, applies risk parameter updates using Atlas preSolver hook,
 ///      handles OEV distribution between relevant parties.
@@ -260,16 +259,13 @@ contract AuctionManager is DAppControl {
         CENTRAL_REGISTRY = centralRegistry_;
 
         // Set Oracle related configurations.
-        allowedSelectors[IRedstoneProxy.updateDataFeedsValues.selector] = true;
-        allowedSelectors[IRedstoneProxy.updateDataFeedsValuesPartial.selector] = true;
-        allowedSelectors[ChainlinkCurvanceOEVWrapper.updatePriceEarly.selector] = true;
-        allowedSelectorsCount = 3;
+        allowedSelectors[ChainlinkWrapperEntrypoint.batchUpdatePriceEarly.selector] = true;
+        allowedSelectorsCount = 1;
 
         emit RevenueShareSet(0, fastlaneSplitBPS_, 0, BPS - fastlaneSplitBPS_);
         emit FastlaneRevenueDestinationSet(address(0), fastlaneDestination_);
         emit CurvanceRevenueDestinationSet(address(0), curvanceDestination_);
-        emit AllowedSelectorWhitelistUpdated(IRedstoneProxy.updateDataFeedsValues.selector, true);
-        emit AllowedSelectorWhitelistUpdated(IRedstoneProxy.updateDataFeedsValuesPartial.selector, true);
+        emit AllowedSelectorWhitelistUpdated(ChainlinkWrapperEntrypoint.batchUpdatePriceEarly.selector, true);
     }
 
     /// EXTERNAL FUNCTIONS ///
@@ -584,7 +580,7 @@ contract AuctionManager is DAppControl {
         // The user must be the authorized user op signer.
         if (userOp.from != AuctionManager(CONTROL).authorizedUserOpSigner()) revert AuctionManager__InvalidUserOpFrom();
 
-        // If the userOp contains a RedStone feed update perform it.
+        // If the userOp contains an oracle feed update perform it.
         if (bytes4(userOp.data) == bytes4(AuctionManager.update.selector)) {
             (address _oracle, bytes memory _updateCallData) =
                 abi.decode(userOp.data[4:], (address, bytes));
@@ -596,7 +592,7 @@ contract AuctionManager is DAppControl {
             AuctionManager(CONTROL).verifyAllowedSelector(bytes4(_updateCallData));
         }
 
-        // Else if UserOp does not contain a RedStone update, continue as no-op UserOp
+        // Else if UserOp does not contain an oracle update, continue as no-op UserOp
         // This case is for liquidations triggered by interest accrual, not the oracle.
 
         // Return empty bytes.
