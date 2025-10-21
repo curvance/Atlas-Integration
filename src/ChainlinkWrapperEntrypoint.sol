@@ -42,17 +42,11 @@ contract ChainlinkWrapperEntrypoint is Ownable {
     function batchUpdatePriceEarly() external returns (uint256 successCount) {
         uint256 length = wrappers.length;
 
-        for (uint256 i = 0; i < length; ) {
+        for (uint256 i = 0; i < length; ++i) {
             try ChainlinkCurvanceOEVWrapper(wrappers[i]).updatePriceEarly() {
-                unchecked {
-                    ++successCount;
-                }
+                ++successCount;
             } catch {
                 // Silently continue on failure
-            }
-
-            unchecked {
-                ++i;
             }
         }
 
@@ -67,27 +61,21 @@ contract ChainlinkWrapperEntrypoint is Ownable {
         if (_add) {
             // Add wrapper - check for duplicates
             uint256 length = wrappers.length;
-            for (uint256 i = 0; i < length; ) {
+            for (uint256 i = 0; i < length; ++i) {
                 require(wrappers[i] != _wrapper, "Wrapper already exists");
-                unchecked {
-                    ++i;
-                }
             }
             wrappers.push(_wrapper);
             emit WrapperAdded(_wrapper);
         } else {
             // Remove wrapper - find and remove using swap-and-pop
             uint256 length = wrappers.length;
-            for (uint256 i = 0; i < length; ) {
+            for (uint256 i = 0; i < length; ++i) {
                 if (wrappers[i] == _wrapper) {
                     // Replace with last element and pop
                     wrappers[i] = wrappers[length - 1];
                     wrappers.pop();
                     emit WrapperRemoved(_wrapper);
                     return;
-                }
-                unchecked {
-                    ++i;
                 }
             }
             revert("Wrapper not found");
