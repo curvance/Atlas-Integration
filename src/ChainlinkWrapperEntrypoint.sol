@@ -23,19 +23,6 @@ contract ChainlinkWrapperEntrypoint is Ownable {
         uint256 successfulUpdates
     );
 
-    /// @notice Emitted when an individual wrapper update fails
-    /// @param wrapper The wrapper contract that failed to update
-    /// @param reason The revert reason (if available)
-    event WrapperUpdateFailed(address indexed wrapper, bytes reason);
-
-    /// @notice Emitted when an individual wrapper update succeeds
-    /// @param wrapper The wrapper contract that was successfully updated
-    event WrapperUpdateSucceeded(address indexed wrapper);
-
-    /// @notice Emitted when the wrapper list is updated
-    /// @param newWrappers The new array of wrapper addresses
-    event WrappersUpdated(address[] newWrappers);
-
     /// @notice Emitted when a wrapper is added to the list
     /// @param wrapper The wrapper address that was added
     event WrapperAdded(address indexed wrapper);
