@@ -196,7 +196,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         wrapperEntrypoint.configureWrapper(address(wrapper2), true);
 
         // Whitelist the wrapper entrypoint as an oracle
-        auctionManager_.addOracleToWhitelist(address(wrapperEntrypoint));
+        auctionManager_.addAllowedRoute(address(wrapperEntrypoint), ChainlinkWrapperEntrypoint.batchUpdatePriceEarly.selector);
 
         // Whitelist the entrypoint in both wrappers
         wrapper1.setWhitelist(address(wrapperEntrypoint), true);

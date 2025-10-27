@@ -183,7 +183,7 @@ contract AuctionManagerFastlaneWrapperTest is BaseTest, AtlasErrors, TestBaseMar
         wrapperEntrypoint.configureWrapper(address(wrapper2), true);
 
         // Whitelist the wrapper entrypoint as an oracle
-        auctionManager_.addOracleToWhitelist(address(wrapperEntrypoint));
+        auctionManager_.addAllowedRoute(address(wrapperEntrypoint), ChainlinkWrapperEntrypoint.batchUpdatePriceEarly.selector);
 
         // Whitelist the AuctionManager in both wrappers
         wrapper1.setWhitelist(address(wrapperEntrypoint), true);
