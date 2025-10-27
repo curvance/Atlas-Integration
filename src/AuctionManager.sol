@@ -285,6 +285,10 @@ contract AuctionManager is DAppControl {
         _checkIsGovernor();
 
         if (fastlaneDestination_ == address(0)) revert AuctionManager__InvalidDestination();
+
+        // Distribute accumulated revenue to old destination before changing.
+        _distributeRevenue();
+
         address old = fastlaneRevenueDestination;
         fastlaneRevenueDestination = fastlaneDestination_;
         emit FastlaneRevenueDestinationSet(old, fastlaneDestination_);
@@ -297,8 +301,12 @@ contract AuctionManager is DAppControl {
     ///                             Protocol's revenue split.
     function setCurvanceDestination(address curvanceDestination_) external {
         _checkIsGovernor();
-        
+
         if (curvanceDestination_ == address(0)) revert AuctionManager__InvalidDestination();
+
+        // Distribute accumulated revenue to old destination before changing.
+        _distributeRevenue();
+
         address old = curvanceRevenueDestination;
         curvanceRevenueDestination = curvanceDestination_;
         emit CurvanceRevenueDestinationSet(old, curvanceDestination_);
