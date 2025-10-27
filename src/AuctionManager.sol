@@ -15,6 +15,7 @@ import { SafeTransferLib } from "contracts/libraries/external/SafeTransferLib.so
 import { ICentralRegistry } from "contracts/interfaces/ICentralRegistry.sol";
 import { IMarketManager } from "contracts/interfaces/IMarketManager.sol";
 import { ChainlinkWrapperEntrypoint } from "./ChainlinkWrapperEntrypoint.sol";
+import { IRedstoneProxy } from "contracts/interfaces/external/redstone/IRedstoneProxy.sol";
 
 /// @title AuctionManager
 /// @author Fastlane Labs
@@ -25,8 +26,8 @@ import { ChainlinkWrapperEntrypoint } from "./ChainlinkWrapperEntrypoint.sol";
 ///         auctions on Curvance; enabling Curvance to implement
 ///         application-specific ordering rules for liquidations using dynamic
 ///         risk parameters. The DappControl also functions as a whitelisted
-///         caller for Chainlink OEV wrapper batch updates in order to ensure
-///         seamless priority access to liquidations.
+///         caller for Chainlink OEV wrapper batch updates, and RedStone oracle
+///         updates in order to ensure seamless priority access to liquidations.
 /// @dev Uses the Atlas framework for handling of auction execution and solver
 ///      ordering, applies risk parameter updates using Atlas preSolver hook,
 ///      handles OEV distribution between relevant parties.
@@ -260,12 +261,16 @@ contract AuctionManager is DAppControl {
 
         // Set Oracle related configurations.
         allowedSelectors[ChainlinkWrapperEntrypoint.batchUpdatePriceEarly.selector] = true;
-        allowedSelectorsCount = 1;
+        allowedSelectors[IRedstoneProxy.updateDataFeedsValues.selector] = true;
+        allowedSelectors[IRedstoneProxy.updateDataFeedsValuesPartial.selector] = true;
+        allowedSelectorsCount = 3;
 
         emit RevenueShareSet(0, fastlaneSplitBPS_, 0, BPS - fastlaneSplitBPS_);
         emit FastlaneRevenueDestinationSet(address(0), fastlaneDestination_);
         emit CurvanceRevenueDestinationSet(address(0), curvanceDestination_);
         emit AllowedSelectorWhitelistUpdated(ChainlinkWrapperEntrypoint.batchUpdatePriceEarly.selector, true);
+        emit AllowedSelectorWhitelistUpdated(IRedstoneProxy.updateDataFeedsValues.selector, true);
+        emit AllowedSelectorWhitelistUpdated(IRedstoneProxy.updateDataFeedsValuesPartial.selector, true);
     }
 
     /// EXTERNAL FUNCTIONS ///
