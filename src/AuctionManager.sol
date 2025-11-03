@@ -70,19 +70,12 @@ contract AuctionManager is DAppControl {
     ///         operations.
     address public authorizedExecutionEnv;
 
-    /// @notice Number of whitelisted oracle addresses.
-    uint32 public whitelistedOraclesCount;
+    /// @notice Count of allowed oracle routes (oracle-selector combinations)
+    /// @dev Informational only, does not affect enforcement
+    uint32 public allowedRoutesCount = 0;
 
-    /// @notice Number of allowed function selectors for oracle updates.
-    uint32 public allowedSelectorsCount;
-
-    /// @notice Mapping of oracle addresses to their whitelist status.
-    /// @dev Oracle Address => Whitelisting status.
-    mapping(address oracle => bool isWhitelisted) public oracleWhitelist;
-    
-    /// @notice Mapping of function selectors to their allowed status.
-    /// @dev Function Selector => Allowed status.
-    mapping(bytes4 selector => bool isAllowed) public allowedSelectors;
+    /// @notice Mapping of oracle address to function selector to their allowed status
+    mapping(address oracle => mapping(bytes4 selector => bool isAllowed)) public oracleAllowedSelectors;
 
     /// EVENTS ///
 
@@ -135,15 +128,11 @@ contract AuctionManager is DAppControl {
     /// @param newAuthorizedUserOpSigner New authorized signer.
     event AuthorizedUserOpSignerSet(address oldAuthorizedUserOpSigner, address newAuthorizedUserOpSigner);
 
-    /// @notice Emitted when an oracle's whitelist status is updated.
-    /// @param oracle Address of the oracle.
-    /// @param isWhitelisted New whitelist status.
-    event OracleWhitelistUpdated(address indexed oracle, bool isWhitelisted);
-
-    /// @notice Emitted when a function selector's whitelisting status is updated.
-    /// @param selector Function selector having whitelist status updated.
-    /// @param isWhitelisted Whether `selector` is whitelisted or not after update.
-    event AllowedSelectorWhitelistUpdated(bytes4 indexed selector, bool isWhitelisted);
+    /// @notice Emitted when allowed oracle route status is updated
+    /// @param oracle The oracle address for which the selector is being updated
+    /// @param selector The function selector being updated
+    /// @param isAllowed Whether the route is allowed or not
+    event AllowedRouteUpdated(address indexed oracle, bytes4 indexed selector, bool isAllowed);
 
     /// ERRORS /// 
 
@@ -171,14 +160,17 @@ contract AuctionManager is DAppControl {
 
     // ORACLE RELATED ERRORS
 
-    /// @notice Thrown when non-whitelisted oracle is used.
-    error AuctionManager__InvalidOracle();
-    
     /// @notice Thrown when oracle update call fails.
     error AuctionManager__OracleUpdateFailed();
-    
-    /// @notice Thrown when using non-allowed function selector.
-    error AuctionManager__InvalidSelector();
+
+    /// @notice Thrown when oracle route (oracle-selector combination) is not allowed.
+    error AuctionManager__InvalidRoute();
+
+    /// @notice Thrown when trying to use invalid oracle or selector parameters.
+    error AuctionManager__InvalidRouteParameters();
+
+    /// @notice Thrown when user operation calls an invalid entry function.
+    error AuctionManager__InvalidUserEntryCall();
 
     // SOLVER ERRORS
 
@@ -259,18 +251,9 @@ contract AuctionManager is DAppControl {
         // Set `CENTRAL_REGISTRY`.
         CENTRAL_REGISTRY = centralRegistry_;
 
-        // Set Oracle related configurations.
-        allowedSelectors[ChainlinkWrapperEntrypoint.batchUpdatePriceEarly.selector] = true;
-        allowedSelectors[IRedstoneProxy.updateDataFeedsValues.selector] = true;
-        allowedSelectors[IRedstoneProxy.updateDataFeedsValuesPartial.selector] = true;
-        allowedSelectorsCount = 3;
-
         emit RevenueShareSet(0, fastlaneSplitBPS_, 0, BPS - fastlaneSplitBPS_);
         emit FastlaneRevenueDestinationSet(address(0), fastlaneDestination_);
         emit CurvanceRevenueDestinationSet(address(0), curvanceDestination_);
-        emit AllowedSelectorWhitelistUpdated(ChainlinkWrapperEntrypoint.batchUpdatePriceEarly.selector, true);
-        emit AllowedSelectorWhitelistUpdated(IRedstoneProxy.updateDataFeedsValues.selector, true);
-        emit AllowedSelectorWhitelistUpdated(IRedstoneProxy.updateDataFeedsValuesPartial.selector, true);
     }
 
     /// EXTERNAL FUNCTIONS ///
@@ -302,6 +285,10 @@ contract AuctionManager is DAppControl {
         _checkIsGovernor();
 
         if (fastlaneDestination_ == address(0)) revert AuctionManager__InvalidDestination();
+
+        // Distribute accumulated revenue to old destination before changing.
+        _distributeRevenue();
+
         address old = fastlaneRevenueDestination;
         fastlaneRevenueDestination = fastlaneDestination_;
         emit FastlaneRevenueDestinationSet(old, fastlaneDestination_);
@@ -314,8 +301,12 @@ contract AuctionManager is DAppControl {
     ///                             Protocol's revenue split.
     function setCurvanceDestination(address curvanceDestination_) external {
         _checkIsGovernor();
-        
+
         if (curvanceDestination_ == address(0)) revert AuctionManager__InvalidDestination();
+
+        // Distribute accumulated revenue to old destination before changing.
+        _distributeRevenue();
+
         address old = curvanceRevenueDestination;
         curvanceRevenueDestination = curvanceDestination_;
         emit CurvanceRevenueDestinationSet(old, curvanceDestination_);
@@ -423,73 +414,52 @@ contract AuctionManager is DAppControl {
     }
 
     // ---------------------------------------------------- //
-    //            Whitelisted-Related Functions             //
+    //               ORACLE MANAGEMENT FUNCTIONS            //
     // ---------------------------------------------------- //
 
-    /// @notice Adds an oracle to the whitelist.
-    /// @dev Only callable by governor.
-    /// @param oracle Address of the oracle to whitelist.
-    function addOracleToWhitelist(address oracle) external {
+    /// @notice Verifies if a route (oracle-selector combination) is allowed
+    /// @param oracle The oracle address to check
+    /// @param selector The function selector to verify
+    /// @dev Always enforced
+    /// @dev Reverts with InvalidRoute if route is not allowed
+    function verifyAllowedRoute(address oracle, bytes4 selector) external view {
+        if (!oracleAllowedSelectors[oracle][selector]) revert AuctionManager__InvalidRoute();
+    }
+
+    /// @notice Adds a route (oracle-selector combination) to the allowed list
+    /// @param oracle The oracle address to allow the selector for
+    /// @param selector The function selector to allow
+    /// @dev Can only be called by governance
+    /// @dev No-op if route is already allowed
+    /// @dev Reverts if oracle is address(0) or selector is 0x00000000
+    function addAllowedRoute(address oracle, bytes4 selector) external {
         _checkIsGovernor();
-        
-        if (!oracleWhitelist[oracle]) {
-            oracleWhitelist[oracle] = true;
-            whitelistedOraclesCount++;
-            emit OracleWhitelistUpdated(oracle, true);
+
+        if (oracle == address(0) || selector == bytes4(0)) revert AuctionManager__InvalidRouteParameters();
+
+        if (!oracleAllowedSelectors[oracle][selector]) {
+            oracleAllowedSelectors[oracle][selector] = true;
+            allowedRoutesCount++;
+            emit AllowedRouteUpdated(oracle, selector, true);
         }
     }
 
-    /// @notice Removes an oracle from the whitelist.
-    /// @dev Only callable by governor.
-    /// @param oracle Address of the oracle to remove.
-    function removeOracleFromWhitelist(address oracle) external {
+    /// @notice Removes a route (oracle-selector combination) from the allowed list
+    /// @param oracle The oracle address to remove the selector from
+    /// @param selector The function selector to remove from allowed list
+    /// @dev Can only be called by governance
+    /// @dev No-op if route is not allowed
+    /// @dev Reverts if oracle is address(0) or selector is 0x00000000
+    function removeAllowedRoute(address oracle, bytes4 selector) external {
         _checkIsGovernor();
-        
-        if (oracleWhitelist[oracle]) {
-            delete oracleWhitelist[oracle];
-            whitelistedOraclesCount--;
-            emit OracleWhitelistUpdated(oracle, false);
+
+        if (oracle == address(0) || selector == bytes4(0)) revert AuctionManager__InvalidRouteParameters();
+
+        if (oracleAllowedSelectors[oracle][selector]) {
+            oracleAllowedSelectors[oracle][selector] = false;
+            allowedRoutesCount--;
+            emit AllowedRouteUpdated(oracle, selector, false);
         }
-    }
-
-    /// @notice Verifies if an oracle is whitelisted.
-    /// @dev Whitelisting is enforced only if the whitelist is not empty.
-    /// @param oracle Address of the oracle to verify.
-    function verifyOracleWhitelist(address oracle) external view {
-        if (whitelistedOraclesCount > 0 && !oracleWhitelist[oracle]) revert AuctionManager__InvalidOracle();
-    }
-
-    /// @notice Adds a function selector to `allowedSelectors`.
-    /// @dev Only callable by governor.
-    /// @param selector Function selector to allow.
-    function addAllowedSelector(bytes4 selector) external {
-        _checkIsGovernor();
-        
-        if (!allowedSelectors[selector]) {
-            allowedSelectors[selector] = true;
-            allowedSelectorsCount++;
-            emit AllowedSelectorWhitelistUpdated(selector, true);
-        }
-    }
-
-    /// @notice Removes a function selector from `allowedSelectors`.
-    /// @dev Only callable by governor.
-    /// @param selector The function selector to remove.
-    function removeAllowedSelector(bytes4 selector) external {
-        _checkIsGovernor();
-        
-        if (allowedSelectors[selector]) {
-            delete allowedSelectors[selector];
-            allowedSelectorsCount--;
-            emit AllowedSelectorWhitelistUpdated(selector, false);
-        }
-    }
-
-    /// @notice Verifies if a function selector is allowed for oracle updates.
-    /// @dev Whitelisting is enforced only if the whitelist is not empty.
-    /// @param selector Function selector to verify.
-    function verifyAllowedSelector(bytes4 selector) external view {
-        if (allowedSelectorsCount > 0 && !allowedSelectors[selector]) revert AuctionManager__InvalidSelector();
     }
 
     /// @notice Returns the current revenue share configuration and
@@ -585,20 +555,21 @@ contract AuctionManager is DAppControl {
         // The user must be the authorized user op signer.
         if (userOp.from != AuctionManager(CONTROL).authorizedUserOpSigner()) revert AuctionManager__InvalidUserOpFrom();
 
-        // If the userOp contains an oracle feed update perform it.
-        if (bytes4(userOp.data) == bytes4(AuctionManager.update.selector)) {
-            (address _oracle, bytes memory _updateCallData) =
-                abi.decode(userOp.data[4:], (address, bytes));
+        bytes4 selector = bytes4(userOp.data);
 
-            // The called oracle must be whitelisted.
-            AuctionManager(CONTROL).verifyOracleWhitelist(_oracle);
+        // Only allow update or initiateAuction functions
+        if (selector == bytes4(AuctionManager.update.selector)) {
+            // Decode and validate the oracle update parameters
+            (address _oracle, bytes memory _updateCallData) = abi.decode(userOp.data[4:], (address, bytes));
 
-            // The update call data must be a valid function call.
-            AuctionManager(CONTROL).verifyAllowedSelector(bytes4(_updateCallData));
+            // The update call data must be a valid route for this specific oracle
+            AuctionManager(CONTROL).verifyAllowedRoute(_oracle, bytes4(_updateCallData));
+        } else if (selector == bytes4(AuctionManager.initiateAuction.selector)) {
+            // No validation needed for initiateAuction - it's a valid no-op
+        } else {
+            // Any other function selector is invalid
+            revert AuctionManager__InvalidUserEntryCall();
         }
-
-        // Else if UserOp does not contain an oracle update, continue as no-op UserOp
-        // This case is for liquidations triggered by interest accrual, not the oracle.
 
         // Return empty bytes.
         return "";

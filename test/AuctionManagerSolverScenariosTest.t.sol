@@ -176,7 +176,7 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
         wrapperEntrypoint.configureWrapper(address(wrapper2), true);
 
         // Whitelist the wrapper entrypoint as an oracle
-        dappControl.addOracleToWhitelist(address(wrapperEntrypoint));
+        dappControl.addAllowedRoute(address(wrapperEntrypoint), ChainlinkWrapperEntrypoint.batchUpdatePriceEarly.selector);
 
         // Whitelist the entrypoint in both wrappers
         wrapper1.setWhitelist(address(wrapperEntrypoint), true);
