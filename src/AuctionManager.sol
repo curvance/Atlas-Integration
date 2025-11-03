@@ -631,6 +631,9 @@ contract AuctionManager is DAppControl {
 
         uint256 fastlaneSplit = (revenue * fastlaneSplitBPS) / BPS;
         uint256 curvanceSplit = revenue - fastlaneSplit;
+
+        // Reset accumulated auction revenue values.
+        delete accumulatedRevenue;
         
         // Transfer accumulated OEV to destinations
         if (fastlaneSplit > 0) {
@@ -639,9 +642,6 @@ contract AuctionManager is DAppControl {
         if (curvanceSplit > 0) {
             SafeTransferLib.safeTransferETH(curvanceRevenueDestination, curvanceSplit);
         }
-
-        // Reset accumulated auction revenue values.
-        delete accumulatedRevenue;
 
         emit RevenueDistributed(
             fastlaneSplit, 
