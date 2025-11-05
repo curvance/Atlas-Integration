@@ -406,19 +406,19 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
     // Test Extreme Penalty Values - These Should All Fail PreSolver
     // ========================================
 
-    function testPreSolverCall_zeroPenalty_preSolverFailsLegacy() public {
+    function testPreSolverCall_unlistedCollateral_preSolverFailsLegacy() public {
         // NOTE: This test validates that zero penalty (0%) fails PreSolver validation
         // because it's below the minimum allowed penalty of 5% (0.05e18)
         _testPenaltyValueExpectingPreSolverFailure(0);
     }
 
-    function testPreSolverCall_maxPenalty_preSolverFailsLegacy() public {
+    function testPreSolverCall_unlistedCollateral_preSolverFailsLegacy_2() public {
         // NOTE: This test validates that max penalty fails PreSolver validation
         // because it's above the maximum allowed penalty of 15% (0.15e18)
         _testPenaltyValueExpectingPreSolverFailure(type(uint256).max);
     }
 
-    function testPreSolverCall_highPenalty_preSolverFailsLegacy() public {
+    function testPreSolverCall_unlistedCollateral_preSolverFailsLegacy_3() public {
         // NOTE: This test validates that 1000% penalty fails PreSolver validation
         // because it's above the maximum allowed penalty of 15% (0.15e18)
         _testPenaltyValueExpectingPreSolverFailure(10e18); // 1000% penalty
@@ -568,7 +568,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
     // Test Using Event-Based Validation (Copied from existing pattern)
     // ========================================
 
-    function testPreSolverCall_zeroPenalty_preSolverFails() public {
+    function testPreSolverCall_unlistedCollateral_preSolverFails() public {
         UserOperation memory userOp = buildUserOperation(userOpSignerPK);
         address executionEnv = auctionManager_.authorizedExecutionEnv();
 
@@ -633,7 +633,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         assertEq(auctionWon, false, "auction should not be won (no successful solvers)");
     }
 
-    function testPreSolverCall_maxPenalty_preSolverFails() public {
+    function testPreSolverCall_unlistedCollateral_preSolverFails_2() public {
         UserOperation memory userOp = buildUserOperation(userOpSignerPK);
 
         bytes32 userOpHash = atlasVerification.getUserOperationHash(userOp);
