@@ -401,7 +401,7 @@ contract AuctionManager is DAppControl {
         _checkAuthorizedExecutionEnv();
 
         uint256 pendingRevenue = accumulatedRevenue;
-        if (pendingRevenue + msg.value > type(uint208).max) {
+        if (pendingRevenue + msg.value > type(uint192).max) {
             _distributeRevenue();
             pendingRevenue = 0;
         }
