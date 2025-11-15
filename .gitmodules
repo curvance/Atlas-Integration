@@ -4,6 +4,3 @@
 [submodule "lib/atlas"]
 	path = lib/atlas
 	url = https://github.com/FastLane-Labs/atlas
-[submodule "lib/curvance-contracts"]
-	path = lib/curvance-contracts
-	url = https://github.com/curvance/curvance-contracts
