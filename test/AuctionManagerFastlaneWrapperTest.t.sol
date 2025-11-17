@@ -128,7 +128,11 @@ contract AuctionManagerFastlaneWrapperTest is BaseTest, AtlasErrors, TestBaseMar
         _setCTokenConfigBasic(address(borrowableCDAI), 1_000_000e18, 1_000_000e18);
         _setCTokenConfigBasic(address(borrowableCUSDC), 1_000_000e6, 1_000_000e6);
 
-        unauthorizedMarketManager = new MarketManagerIsolated(ICentralRegistry(address(centralRegistry)));
+        unauthorizedMarketManager = new MarketManagerIsolated(
+            ICentralRegistry(address(centralRegistry)),
+            10e18, // minLoanSize
+            true // isCorrelatedMarket
+        );
 
         vm.stopPrank();
 

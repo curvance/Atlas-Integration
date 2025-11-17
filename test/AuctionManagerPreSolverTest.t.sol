@@ -133,7 +133,11 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         _setCTokenConfigBasic(address(borrowableCUSDC), 1_000_000e6, 1_000_000e6);
 
         // Create unauthorized market manager (not registered in central registry)
-        unauthorizedMarketManager = new MarketManagerIsolated(ICentralRegistry(address(centralRegistry)));
+        unauthorizedMarketManager = new MarketManagerIsolated(
+            ICentralRegistry(address(centralRegistry)),
+            10e18, // minLoanSize
+            true // isCorrelatedMarket
+        );
 
         vm.stopPrank();
 
