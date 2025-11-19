@@ -35,8 +35,9 @@ import { IRedstoneProxy } from "contracts/interfaces/external/redstone/IRedstone
 contract AuctionManager is DAppControl {
     /// CONSTANTS ///
 
-    /// @notice Immutable reference to Curvance Central Registry.
-    ICentralRegistry public immutable CENTRAL_REGISTRY;
+    /// @notice Reference to Curvance Central Registry.
+    /// @dev Can only be set once via setCentralRegistry.
+    ICentralRegistry public CENTRAL_REGISTRY;
 
     /// STORAGE ///
 
@@ -134,6 +135,10 @@ contract AuctionManager is DAppControl {
     /// @param isAllowed Whether the route is allowed or not
     event AllowedRouteUpdated(address indexed oracle, bytes4 indexed selector, bool isAllowed);
 
+    /// @notice Emitted when the Central Registry is set.
+    /// @param centralRegistry The address of the Central Registry.
+    event CentralRegistrySet(address indexed centralRegistry);
+
     /// ERRORS /// 
 
     /// @notice Thrown when execution environment calling a hook is invalid.
@@ -177,10 +182,14 @@ contract AuctionManager is DAppControl {
     /// @notice Thrown when solver operation data is malformed.
     error AuctionManager__MalformedSolverOperation();
 
+    // CENTRAL REGISTRY ERRORS
+
+    /// @notice Thrown when trying to set CENTRAL_REGISTRY when it's already set.
+    error AuctionManager__CentralRegistryAlreadySet();
+
     /// CONSTRUCTOR /// 
 
-    /// @notice Initializes the AuctionManager with Atlas, Central Registry,
-    ///         and revenue allocation configurations.
+    /// @notice Initializes the AuctionManager with Atlas and revenue allocation configurations.
     /// @dev Configures Atlas CallConfig with the following key settings:
     /// - requirePreOps: true - Enables pre-operation hook for oracle updates
     ///                         and auctioneer validation.
@@ -195,7 +204,6 @@ contract AuctionManager is DAppControl {
     ///                                     rules for parallel solver
     ///                                     execution.
     /// @param atlas Address of the Atlas contract.
-    /// @param centralRegistry_ Address of the Curvance Central Registry.
     /// @param fastlaneSplitBPS_ Initial revenue share for Fastlane Labs,
     ///                          in `BPS`.
     /// @dev Must NOT exceed `BPS`.
@@ -205,7 +213,6 @@ contract AuctionManager is DAppControl {
     ///                             revenue share.
     constructor(
         address atlas,
-        ICentralRegistry centralRegistry_,
         uint256 fastlaneSplitBPS_,
         address fastlaneDestination_,
         address curvanceDestination_
@@ -238,8 +245,6 @@ contract AuctionManager is DAppControl {
             })
         )
     {
-        CentralRegistryLib._isCentralRegistry(centralRegistry_);
-
         // Configure revenue allocation.
         if (fastlaneSplitBPS_ > BPS) revert AuctionManager__InvalidRevenueConfig();
         if (fastlaneDestination_ == address(0)) revert AuctionManager__InvalidDestination();
@@ -247,9 +252,6 @@ contract AuctionManager is DAppControl {
         fastlaneSplitBPS = uint16(fastlaneSplitBPS_);
         fastlaneRevenueDestination = fastlaneDestination_;
         curvanceRevenueDestination = curvanceDestination_;
-
-        // Set `CENTRAL_REGISTRY`.
-        CENTRAL_REGISTRY = centralRegistry_;
 
         emit RevenueShareSet(0, fastlaneSplitBPS_, 0, BPS - fastlaneSplitBPS_);
         emit FastlaneRevenueDestinationSet(address(0), fastlaneDestination_);
@@ -339,11 +341,27 @@ contract AuctionManager is DAppControl {
     ///                                operations.
     function setAuthorizedUserOpSigner(address authorizedUserOpSigner_) external {
         _checkIsGovernor();
-        
+
         address old = authorizedUserOpSigner;
         authorizedUserOpSigner = authorizedUserOpSigner_;
         _updateAuthorizedExecutionEnv(authorizedUserOpSigner_);
         emit AuthorizedUserOpSignerSet(old, authorizedUserOpSigner_);
+    }
+
+    /// @notice Sets the Central Registry address.
+    /// @dev Can only be called once by governance. Reverts if already set.
+    /// @param centralRegistry_ Address of the Curvance Central Registry.
+    function setCentralRegistry(ICentralRegistry centralRegistry_) external {
+        _checkIsGovernor();
+
+        if (address(CENTRAL_REGISTRY) != address(0)) {
+            revert AuctionManager__CentralRegistryAlreadySet();
+        }
+
+        CentralRegistryLib._isCentralRegistry(centralRegistry_);
+        CENTRAL_REGISTRY = centralRegistry_;
+
+        emit CentralRegistrySet(address(centralRegistry_));
     }
 
     // ---------------------------------------------------- //

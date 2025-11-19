@@ -25,12 +25,12 @@ contract AuctionManagerBidParamsTest is BaseTest, TestBaseMarketIsolated {
 
         dappControlWrapper = new AuctionManagerTestWrapper(
             address(atlas),
-            address(centralRegistry),
             OEV_SHARE_BUNDLER,
             OEV_SHARE_FASTLANE,
             OEV_ALLOCATION_DESTINATION_FASTLANE,
             OEV_ALLOCATION_DESTINATION_PROTOCOL
         );
+        dappControlWrapper.setCentralRegistry(ICentralRegistry(address(centralRegistry)));
     }
 
     function testGetBidParamsFromSolverOpData_malformed_reverts() public {
@@ -244,7 +244,6 @@ contract MockSolverForBidParams {
 contract AuctionManagerTestWrapper is AuctionManager {
     constructor(
         address atlas,
-        address centralRegistry_,
         uint256 oevShareBundler_,
         uint256 oevShareFastlane_,
         address oevAllocationDestinationFastlane_,
@@ -252,7 +251,6 @@ contract AuctionManagerTestWrapper is AuctionManager {
     )
         AuctionManager(
             atlas,
-            ICentralRegistry(centralRegistry_),
             oevShareFastlane_,
             oevAllocationDestinationFastlane_,
             oevAllocationDestinationProtocol_

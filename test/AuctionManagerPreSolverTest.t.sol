@@ -146,12 +146,12 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
 
         auctionManager_ = new AuctionManager(
             address(atlas),
-            ICentralRegistry(address(centralRegistry)),
             OEV_SHARE_FASTLANE,
             OEV_ALLOCATION_DESTINATION_FASTLANE,
             OEV_ALLOCATION_DESTINATION_PROTOCOL
         );
 
+        auctionManager_.setCentralRegistry(ICentralRegistry(address(centralRegistry)));
         auctionManager_.setAuthorizedUserOpSigner(userOpSigner);
         atlasVerification.initializeGovernance(address(auctionManager_));
         atlasVerification.addSignatory(address(auctionManager_), auctioneer);
