@@ -131,12 +131,12 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
         vm.startPrank(governanceEOA);
         dappControl = new AuctionManager(
             address(atlas),
-            ICentralRegistry(address(centralRegistry)),
             OEV_SHARE_FASTLANE,
             OEV_ALLOCATION_DESTINATION_FASTLANE,
             OEV_ALLOCATION_DESTINATION_PROTOCOL
         );
 
+        dappControl.setCentralRegistry(ICentralRegistry(address(centralRegistry)));
         dappControl.setAuthorizedUserOpSigner(userOpSigner);
         atlasVerification.initializeGovernance(address(dappControl));
         atlasVerification.addSignatory(address(dappControl), auctioneer);
