@@ -99,7 +99,7 @@ contract AuctionManagerSolverScenariosTest is AtlasErrors, TestBaseMarketIsolate
     uint256 auctioneerPK = 0xabcdef;
     address auctioneer = vm.addr(auctioneerPK);
 
-    uint256 userOpSignerPK = 0x123456;
+    uint256 userOpSignerPK = 0xDEADBEEF123456789ABCDEF;
     address userOpSigner = vm.addr(userOpSignerPK);
 
     uint256 bundlerPK = 0x234567;

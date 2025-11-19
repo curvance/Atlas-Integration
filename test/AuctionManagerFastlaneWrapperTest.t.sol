@@ -103,7 +103,7 @@ contract AuctionManagerFastlaneWrapperTest is BaseTest, AtlasErrors, TestBaseMar
     uint256 auctioneerPK = 0xabcdef;
     address auctioneer = vm.addr(auctioneerPK);
 
-    uint256 userOpSignerPK = 0x123456;
+    uint256 userOpSignerPK = 0xDEADBEEF123456789ABCDEF;
     address userOpSigner = vm.addr(userOpSignerPK);
 
     uint256 bundlerPK = 0x234567;
@@ -242,13 +242,16 @@ contract AuctionManagerFastlaneWrapperTest is BaseTest, AtlasErrors, TestBaseMar
 
         vm.startBroadcast(bundlerPK);
 
-        (bool success,) = address(atlas).call{gas: 21_100_000}(
+        (bool success, bytes memory returnData) = address(atlas).call{gas: 21_100_000}(
             abi.encodeWithSelector(atlas.metacall.selector, userOp, solverOps, dappOp, address(0))
         );
 
         vm.stopBroadcast();
 
-        assertTrue(success, "metacall should succeed");
+        assertEq(success, true, "metacall should execute successfully");
+
+        bool auctionWon = abi.decode(returnData, (bool));
+        assertEq(auctionWon, false, "auction won should be false (as per existing test pattern)");
 
         // Verify both wrappers were updated
         assertEq(wrapper1.cachedRoundId(), 101, "Wrapper1 should have updated round ID");
