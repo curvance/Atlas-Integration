@@ -35,6 +35,8 @@ jobs:
       - name: Checkout submodules
         run: |
           git submodule update --init --recursive
+          # Ensure nested submodules inside curvance-contracts match expected state
+          git -C lib/curvance-contracts submodule update --init --recursive --remote
 
       - name: Install dependencies
         run: yarn install --immutable || true
