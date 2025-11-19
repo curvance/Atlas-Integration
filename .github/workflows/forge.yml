@@ -44,5 +44,8 @@ jobs:
         with:
           version: stable
 
+      - name: Install deps
+        run: forge install
+
       - name: Run forge tests
         run: forge test --ffi
