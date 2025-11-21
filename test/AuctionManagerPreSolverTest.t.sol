@@ -16,12 +16,19 @@ import {AtlasEvents} from "@atlas/contracts/types/AtlasEvents.sol";
 import {SolverOutcome} from "@atlas/contracts/types/EscrowTypes.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {ICentralRegistry} from "contracts/interfaces/ICentralRegistry.sol";
+import {IMarketManager} from "contracts/interfaces/IMarketManager.sol";
 import { AuctionManager } from "src/AuctionManager.sol";
 import { ChainlinkWrapperEntrypoint } from "src/ChainlinkWrapperEntrypoint.sol";
 import { ChainlinkCurvanceOEVWrapper } from "src/ChainlinkCurvanceOEVWrapper.sol";
 
 import { BorrowableCToken } from "contracts/market/token/BorrowableCToken.sol";
 import { console2 } from "forge-std/console2.sol";
+import { FixedPointMathLib } from "contracts/libraries/external/FixedPointMathLib.sol";
+import { WAD_SQUARED, WAD_SQUARED_BPS_OFFSET } from "contracts/libraries/ConstantsLib.sol";
+import { IERC20 } from "contracts/interfaces/IERC20.sol";
+import { IOracleManager } from "contracts/interfaces/IOracleManager.sol";
+import { AccountSnapshot } from "contracts/interfaces/ICToken.sol";
+import { BPS, WAD } from "contracts/libraries/ConstantsLib.sol";
 
 // Mock Aggregator V3 Interface
 interface AggregatorV3Interface {
@@ -89,8 +96,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
     MockChainlinkFeed public mockFeed1;
     MockChainlinkFeed public mockFeed2;
 
-    address public collateralToken = address(0xccccccc);
-    address public invalidCollateral = address(0xbbbbbbb);
+    address public unlistedToken = address(0xccccccc); // Unlisted collateral token for testing
 
     MockSolver public solver;
 
@@ -208,11 +214,66 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
 
         vm.stopPrank();
 
+        // DIFFERENCE: MockSolver now needs all contract addresses passed to constructor
         vm.prank(solverOneEOA);
-        solver = new MockSolver(address(WETH_ADDRESS), address(atlas));
+        solver = new MockSolver(
+            address(WETH_ADDRESS),
+            address(atlas),
+            address(borrowableCUSDC),
+            address(borrowableCDAI),
+            address(usdc),
+            address(dai),
+            address(marketManagerIsolated),
+            address(oracleManager),
+            user1
+        );
         vm.deal(address(solver), 10 * solverBidAmount);
         vm.prank(solverOneEOA);
         atlas.depositAndBond{value: 5 ether}(5 ether);
+
+        // DIFFERENCE: Give solver USDC for liquidation (reference file line 71)
+        // NOTE: In reference, liquidator calls _prepareUSDC, but solver can't do that, so we give it USDC here
+        _prepareUSDC(address(solver), 1000e6);
+
+        // ========================================
+        // Liquidation setup - copied from AuctionDerivedIncentiveAndCloseFactor.t.sol setUp()
+        // DIFFERENCE: Using centralRegistry.daoAddress() instead of address(this) because we need proper permissions
+        // ========================================
+        vm.startPrank(centralRegistry.daoAddress());
+
+        // IDENTICAL: Market setup from reference file lines 43-44
+        _prepareDAI(centralRegistry.daoAddress(), 77777);
+        _prepareUSDC(centralRegistry.daoAddress(), 100_000e6 + 77777);
+
+        // IDENTICAL: Token approvals from reference file lines 46-47
+        usdc.approve(address(borrowableCUSDC), 100_000e18 + 77777);
+        dai.approve(address(borrowableCDAI), 77777);
+
+        // DIFFERENCE: Tokens already listed earlier at line 133, so NOT calling marketManagerIsolated.listTokens() again
+        // Reference file line 49 calls: marketManagerIsolated.listTokens(address(borrowableCUSDC), address(borrowableCDAI));
+
+        // DIFFERENCE: Config already set earlier at lines 134-135, so NOT calling _setCTokenConfigBasic() again
+        // Reference file lines 51-52 call: _setCTokenConfigBasic(address(borrowableCUSDC), 100_000e6, 100_000e6); etc.
+
+        // IDENTICAL: Deposit USDC from reference file line 54
+        borrowableCUSDC.deposit(100_000e6, centralRegistry.daoAddress());
+
+        // IDENTICAL: Set initial prices from reference file lines 56-57
+        mockUsdcFeed.setMockAnswer(1e8);
+        mockDaiFeed.setMockAnswer(1e8);
+
+        vm.stopPrank();
+
+        // IDENTICAL: Set up user positions from reference file lines 60-65
+        vm.startPrank(user1);
+        _prepareDAI(user1, 1000e18);
+        dai.approve(address(borrowableCDAI), 1000e18);
+        borrowableCDAI.depositAsCollateral(1000e18, user1);
+        borrowableCUSDC.borrow(500e6, user1);
+        vm.stopPrank();
+
+        // IDENTICAL: Drop DAI price to make position liquidatable from reference file line 67
+        mockDaiFeed.setMockAnswer(70007000);
     }
 
     // ========================================
@@ -227,7 +288,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(solver),
             atlasVerification.getUserOperationHash(userOp),
             solverBidAmount,
-            collateralToken,
+            address(borrowableCUSDC), // Use valid collateral
             address(unauthorizedMarketManager), // Use unauthorized market
             false // not reverting
         );
@@ -242,10 +303,18 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         vm.deal(bundler, 2 ether);
         vm.txGasPrice(1 gwei);
 
+        // Expect the oracle update to happen successfully (before solver execution)
+        vm.expectEmit(true, false, false, true, address(wrapperEntrypoint));
+        emit ChainlinkWrapperEntrypoint.BatchUpdateExecuted(
+            address(auctionManager_), // updater is the dapp control
+            2, // totalWrappers
+            2  // successfulUpdates
+        );
+
         // Expect the solver to fail with PreSolverFailed due to unauthorized market
         // because the market manager is not registered in the central registry
         uint256 expectedResult = 1 << uint256(SolverOutcome.PreSolverFailed);
-        
+
         vm.expectEmit(address(atlas));
         emit AtlasEvents.SolverTxResult(
             address(solver),
@@ -257,7 +326,17 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             false, // success = false
             expectedResult // PreSolverFailed
         );
-        
+
+        // Expect MetacallResult with solverSuccessful = false
+        vm.expectEmit(true, true, true, false, address(atlas));
+        emit AtlasEvents.MetacallResult(
+            bundler,
+            userOpSigner,
+            false, // solverSuccessful = false
+            0, // ethPaidToBundler
+            0 // netGasSurcharge
+        );
+
         vm.startBroadcast(bundlerPK);
         
         // Atlas catches ALL PreSolver reverts gracefully, including unauthorized markets!
@@ -275,71 +354,13 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
     }
 
     // ========================================
-    // Test Invalid Collateral
+    // Test Collateral Mismatch
     // ========================================
-
-    function testPreSolverCall_invalidCollateral_preSolverFails() public {
-        // Test with a collateral that's not configured in the market manager
-        // The market manager only has collateralToken configured, so invalidCollateral should fail
-        // with _UNAUTHORIZED_LIQUIDATION_SELECTOR because ctData.collRatio == 0 for unlisted tokens
-        UserOperation memory userOp = buildUserOperation(userOpSignerPK);
-
-        SolverOperation memory solverOp = buildSolverOperation(
-            solverOnePK,
-            address(solver),
-            atlasVerification.getUserOperationHash(userOp),
-            solverBidAmount,
-            invalidCollateral, // This collateral is NOT configured in market manager
-            address(marketManagerIsolated),
-            false
-        );
-
-        SolverOperation[] memory solverOps = new SolverOperation[](1);
-        solverOps[0] = solverOp;
-
-        bytes32 callChainHash = CallVerification.getCallChainHash(userOp, solverOps);
-        DAppOperation memory dappOp =
-            buildDAppOperation(atlasVerification.getUserOperationHash(userOp), callChainHash, bundler);
-
-        vm.deal(bundler, 2 ether);
-        vm.txGasPrice(1 gwei);
-
-        // Expect the solver to fail with PreSolverFailed due to unauthorized liquidation
-        // The specific error MarketManager__UnauthorizedLiquidation() (0xfac97a2b) will be caught by Atlas
-        uint256 expectedResult = 1 << uint256(SolverOutcome.PreSolverFailed);
-
-        vm.expectEmit(address(atlas));
-        emit AtlasEvents.SolverTxResult(
-            address(solver),
-            solverOneEOA,
-            address(auctionManager_),
-            address(0),
-            solverBidAmount,
-            false, // executed = false (PreSolver failed due to unauthorized collateral)
-            false, // success = false
-            expectedResult // PreSolverFailed
-        );
-
-        vm.startBroadcast(bundlerPK);
-
-        // Atlas catches the MarketManager__UnauthorizedLiquidation() error gracefully
-        // and marks the solver as PreSolverFailed
-        (bool success, bytes memory returnData) = address(atlas).call{gas: 21_100_000}(
-            abi.encodeWithSelector(atlas.metacall.selector, userOp, solverOps, dappOp, address(0))
-        );
-
-        vm.stopBroadcast();
-
-        // Atlas handles the failure gracefully:
-        assertEq(success, true, "metacall should succeed even with unauthorized collateral");
-        bool auctionWon = abi.decode(returnData, (bool));
-        assertEq(auctionWon, false, "auction should not be won due to PreSolver failure");
-    }
 
     function testPreSolverCall_mismatchedCollateral_preSolverFails() public {
         // Test where both collaterals are valid/listed, but there's a mismatch:
-        // - Solver data specifies invalidCollateral (gets unlocked in preSolverCall)
-        // - But solver attempts liquidation with collateralToken (different from unlocked)
+        // - Solver data specifies one collateral (gets unlocked in preSolverCall)
+        // - But solver attempts liquidation with a different collateral
         // This should fail the transient storage check in _checkLiquidationConfig
 
         // First, configure invalidCollateral in the market manager so it's "valid"
@@ -377,6 +398,14 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         vm.deal(bundler, 2 ether);
         vm.txGasPrice(1 gwei);
 
+        // Expect the oracle update to happen successfully (before solver execution)
+        vm.expectEmit(true, false, false, true, address(wrapperEntrypoint));
+        emit ChainlinkWrapperEntrypoint.BatchUpdateExecuted(
+            address(auctionManager_), // updater is the dapp control
+            2, // totalWrappers
+            2  // successfulUpdates
+        );
+
         // Expect the solver to revert during execution due to collateral mismatch
         uint256 expectedResult = 1 << uint256(SolverOutcome.SolverOpReverted);
 
@@ -390,6 +419,16 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             true, // executed = true (preSolver passed, but solver reverted)
             false, // success = false (solver reverted during execution)
             expectedResult // SolverOpReverted
+        );
+
+        // Expect MetacallResult with solverSuccessful = false
+        vm.expectEmit(true, true, true, false, address(atlas));
+        emit AtlasEvents.MetacallResult(
+            bundler,
+            userOpSigner,
+            false, // solverSuccessful = false
+            0, // ethPaidToBundler
+            0 // netGasSurcharge
         );
 
         vm.startBroadcast(bundlerPK);
@@ -407,28 +446,15 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
     }
 
     // ========================================
-    // Test Extreme Penalty Values - These Should All Fail PreSolver
+    // Test Unlisted Collateral Rejection
     // ========================================
 
     function testPreSolverCall_unlistedCollateral_preSolverFailsLegacy() public {
-        // NOTE: This test validates that zero penalty (0%) fails PreSolver validation
-        // because it's below the minimum allowed penalty of 5% (0.05e18)
-        _testPenaltyValueExpectingPreSolverFailure(0);
-    }
-
-    function testPreSolverCall_unlistedCollateral_preSolverFailsLegacy_2() public {
-        // NOTE: This test validates that max penalty fails PreSolver validation
-        // because it's above the maximum allowed penalty of 15% (0.15e18)
-        _testPenaltyValueExpectingPreSolverFailure(type(uint256).max);
-    }
-
-    function testPreSolverCall_unlistedCollateral_preSolverFailsLegacy_3() public {
-        // NOTE: This test validates that 1000% penalty fails PreSolver validation
-        // because it's above the maximum allowed penalty of 15% (0.15e18)
-        _testPenaltyValueExpectingPreSolverFailure(10e18); // 1000% penalty
-    }
-
-    function _testPenaltyValueExpectingPreSolverFailure(uint256 penalty) internal {
+        // NOTE: This test validates that PreSolver fails when attempting to set
+        // transient liquidation config for an unlisted collateral token.
+        // The unlistedToken (0xccccccc) is not configured in the MarketManagerIsolated,
+        // so the Curvance protocol rejects it when setTransientLiquidationConfig is called.
+        // AuctionManager always uses (0, 0) for protocol-derived incentive and close factor.
         UserOperation memory userOp = buildUserOperation(userOpSignerPK);
 
         SolverOperation memory solverOp = buildSolverOperation(
@@ -436,7 +462,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(solver),
             atlasVerification.getUserOperationHash(userOp),
             solverBidAmount,
-            collateralToken,
+            unlistedToken, // Unlisted collateral - not configured in MarketManagerIsolated
             address(marketManagerIsolated),
             false
         );
@@ -451,7 +477,16 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         vm.deal(bundler, 2 ether);
         vm.txGasPrice(1 gwei);
 
-        // Expect the solver to fail with PreSolverFailed due to invalid penalty
+        // Expect the oracle update to happen successfully (before solver execution)
+        vm.expectEmit(true, false, false, true, address(wrapperEntrypoint));
+        emit ChainlinkWrapperEntrypoint.BatchUpdateExecuted(
+            address(auctionManager_), // updater is the dapp control
+            2, // totalWrappers
+            2  // successfulUpdates
+        );
+
+        // Expect the solver to fail with PreSolverFailed due to unlisted collateral
+        // Curvance rejects setTransientLiquidationConfig for tokens not configured in the market
         uint256 expectedResult = 1 << uint256(SolverOutcome.PreSolverFailed);
 
         vm.expectEmit(address(atlas));
@@ -461,9 +496,19 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(auctionManager_),
             address(0),
             solverBidAmount,
-            false, // executed = false (PreSolver failed)
+            false, // executed = false (PreSolver failed - unlisted collateral)
             false, // success = false
             expectedResult // PreSolverFailed
+        );
+
+        // Expect MetacallResult with solverSuccessful = false
+        vm.expectEmit(true, true, true, false, address(atlas));
+        emit AtlasEvents.MetacallResult(
+            bundler,
+            userOpSigner,
+            false, // solverSuccessful = false (no successful solvers)
+            0, // ethPaidToBundler (will be some gas refund amount)
+            0 // netGasSurcharge (will be some gas amount)
         );
 
         vm.startBroadcast(bundlerPK);
@@ -475,7 +520,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         vm.stopBroadcast();
 
         // Atlas handles the failure gracefully:
-        assertEq(success, true, "metacall should succeed even with invalid penalty");
+        assertEq(success, true, "metacall should succeed even with unlisted collateral");
         bool auctionWon = abi.decode(returnData, (bool));
         assertEq(auctionWon, false, "auction should not be won due to PreSolver failure");
     }
@@ -518,152 +563,15 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         vm.deal(bundler, 2 ether);
         vm.txGasPrice(1 gwei);
 
-        vm.startBroadcast(bundlerPK);
-
-        // NOTE: getBidParamsFromSolverOpData() reverts with MalformedSolverOperation
-        // This happens early in _preSolverCall, so let's test if Atlas catches this too
-        vm.expectRevert(); // Testing if this is caught or causes hard revert
-        (bool success,) = address(atlas).call{gas: 21_100_000}(
-            abi.encodeWithSelector(atlas.metacall.selector, userOp, solverOps, dappOp, address(0))
+        // Expect the oracle update to happen successfully (before solver execution)
+        vm.expectEmit(true, false, false, true, address(wrapperEntrypoint));
+        emit ChainlinkWrapperEntrypoint.BatchUpdateExecuted(
+            address(auctionManager_), // updater is the dapp control
+            2, // totalWrappers (wrapper1 and wrapper2)
+            2  // successfulUpdates (both should succeed)
         );
 
-        vm.stopBroadcast();
-    }
-
-    // ========================================
-    // Test Valid Operations
-    // ========================================
-
-    function testPreSolverCall_validOperation_success() public {
-        UserOperation memory userOp = buildUserOperation(userOpSignerPK);
-
-        SolverOperation memory solverOp = buildSolverOperation(
-            solverOnePK,
-            address(solver),
-            atlasVerification.getUserOperationHash(userOp),
-            solverBidAmount,
-            collateralToken,
-            address(marketManagerIsolated),
-            false
-        );
-
-        SolverOperation[] memory solverOps = new SolverOperation[](1);
-        solverOps[0] = solverOp;
-
-        bytes32 callChainHash = CallVerification.getCallChainHash(userOp, solverOps);
-        DAppOperation memory dappOp =
-            buildDAppOperation(atlasVerification.getUserOperationHash(userOp), callChainHash, bundler);
-
-        vm.deal(bundler, 2 ether);
-        vm.txGasPrice(1 gwei);
-
-        vm.startBroadcast(bundlerPK);
-
-        (bool success, bytes memory returnData) = address(atlas).call{gas: 21_100_000}(
-            abi.encodeWithSelector(atlas.metacall.selector, userOp, solverOps, dappOp, address(0))
-        );
-
-        vm.stopBroadcast();
-
-        assertEq(success, true, "metacall should execute successfully");
-
-        bool auctionWon = abi.decode(returnData, (bool));
-        assertEq(auctionWon, false, "auction won should be false (as per existing test pattern)");
-    }
-
-    // ========================================
-    // Test Using Event-Based Validation (Copied from existing pattern)
-    // ========================================
-
-    function testPreSolverCall_unlistedCollateral_preSolverFails() public {
-        UserOperation memory userOp = buildUserOperation(userOpSignerPK);
-        address executionEnv = auctionManager_.authorizedExecutionEnv();
-
-        bytes32 userOpHash = atlasVerification.getUserOperationHash(userOp);
-        SolverOperation memory solverOp = buildSolverOperation(
-            solverOnePK,
-            address(solver),
-            userOpHash,
-            solverBidAmount,
-            collateralToken,
-            address(marketManagerIsolated),
-            false
-        );
-
-        SolverOperation[] memory solverOps = new SolverOperation[](1);
-        solverOps[0] = solverOp;
-
-        bytes32 callChainHash = CallVerification.getCallChainHash(userOp, solverOps);
-        DAppOperation memory dappOp = buildDAppOperation(userOpHash, callChainHash, bundler);
-
-        vm.deal(bundler, 2 ether);
-        vm.txGasPrice(1 gwei);
-
-        // Expect the solver to fail with PreSolverFailed (bit 16 = 65536)
-        uint256 expectedResult = 1 << uint256(SolverOutcome.PreSolverFailed); // 65536
-
-        vm.expectEmit(address(atlas));
-        emit AtlasEvents.SolverTxResult(
-            address(solver),
-            solverOneEOA,
-            address(auctionManager_),
-            address(0),
-            solverBidAmount,
-            false, // executed = false (didn't execute due to PreSolver failure)
-            false, // success = false
-            expectedResult // result = PreSolverFailed flag
-        );
-
-        // Expect MetacallResult with solverSuccessful = false
-        vm.expectEmit(true, true, true, false, address(atlas));
-        emit AtlasEvents.MetacallResult(
-            bundler,
-            userOpSigner,
-            false, // solverSuccessful = false (no successful solvers)
-            0, // ethPaidToBundler (will be some gas refund amount)
-            0 // netGasSurcharge (will be some gas amount)
-        );
-
-        vm.startBroadcast(bundlerPK);
-
-        (bool success, bytes memory returnData) = address(atlas).call{gas: 21_100_000}(
-            abi.encodeWithSelector(atlas.metacall.selector, userOp, solverOps, dappOp, address(0))
-        );
-
-        vm.stopBroadcast();
-
-        // Metacall should succeed (Atlas executed properly)
-        assertEq(success, true, "metacall should execute successfully");
-
-        // But no solvers should have succeeded
-        bool auctionWon = abi.decode(returnData, (bool));
-        assertEq(auctionWon, false, "auction should not be won (no successful solvers)");
-    }
-
-    function testPreSolverCall_unlistedCollateral_preSolverFails_2() public {
-        UserOperation memory userOp = buildUserOperation(userOpSignerPK);
-
-        bytes32 userOpHash = atlasVerification.getUserOperationHash(userOp);
-        SolverOperation memory solverOp = buildSolverOperation(
-            solverOnePK,
-            address(solver),
-            userOpHash,
-            solverBidAmount,
-            collateralToken,
-            address(marketManagerIsolated),
-            false
-        );
-
-        SolverOperation[] memory solverOps = new SolverOperation[](1);
-        solverOps[0] = solverOp;
-
-        bytes32 callChainHash = CallVerification.getCallChainHash(userOp, solverOps);
-        DAppOperation memory dappOp = buildDAppOperation(userOpHash, callChainHash, bundler);
-
-        vm.deal(bundler, 2 ether);
-        vm.txGasPrice(1 gwei);
-
-        // Expect the solver to fail with PreSolverFailed
+        // Expect the solver to fail with PreSolverFailed due to malformed data
         uint256 expectedResult = 1 << uint256(SolverOutcome.PreSolverFailed);
 
         vm.expectEmit(address(atlas));
@@ -673,9 +581,19 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(auctionManager_),
             address(0),
             solverBidAmount,
-            false, // executed = false
+            false, // executed = false (PreSolver failed - malformed data)
             false, // success = false
             expectedResult // PreSolverFailed
+        );
+
+        // Expect MetacallResult with solverSuccessful = false
+        vm.expectEmit(true, true, true, false, address(atlas));
+        emit AtlasEvents.MetacallResult(
+            bundler,
+            userOpSigner,
+            false, // solverSuccessful = false
+            0, // ethPaidToBundler
+            0 // netGasSurcharge
         );
 
         vm.startBroadcast(bundlerPK);
@@ -686,10 +604,10 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
 
         vm.stopBroadcast();
 
-        assertEq(success, true, "metacall should execute successfully");
-
+        // Atlas should handle the malformed data gracefully
+        assertEq(success, true, "metacall should succeed even with malformed solver data");
         bool auctionWon = abi.decode(returnData, (bool));
-        assertEq(auctionWon, false, "auction should not be won due to invalid penalty");
+        assertEq(auctionWon, false, "auction should not be won due to malformed data");
     }
 
     function testPreSolverCall_validPenalty_preSolverSucceeds() public {
@@ -701,7 +619,7 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             address(solver),
             userOpHash,
             solverBidAmount,
-            address(borrowableCUSDC),
+            address(borrowableCDAI), // DIFFERENCE: Pass collateral token (DAI), not debt token (USDC)
             address(marketManagerIsolated),
             false
         );
@@ -714,6 +632,14 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
 
         vm.deal(bundler, 2 ether);
         vm.txGasPrice(1 gwei);
+
+        // Expect the oracle update to happen successfully (before solver execution)
+        vm.expectEmit(true, false, false, true, address(wrapperEntrypoint));
+        emit ChainlinkWrapperEntrypoint.BatchUpdateExecuted(
+            address(auctionManager_), // updater is the dapp control
+            2, // totalWrappers
+            2  // successfulUpdates
+        );
 
         // Expect the solver to succeed (no failure flags)
         vm.expectEmit(address(atlas));
@@ -726,6 +652,16 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             true, // executed = true
             true, // success = true
             0 // result = 0 (no failure flags)
+        );
+
+        // Expect MetacallResult with solverSuccessful = false (bid validation fails)
+        vm.expectEmit(true, true, true, false, address(atlas));
+        emit AtlasEvents.MetacallResult(
+            bundler,
+            userOpSigner,
+            false, // solverSuccessful = false (even though solver executed, bid validation fails)
+            0, // ethPaidToBundler
+            0 // netGasSurcharge
         );
 
         vm.startBroadcast(bundlerPK);
@@ -843,14 +779,196 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
 }
 
 // Reuse the MockSolver from the main test file
+// DIFFERENCE: MockSolver stores contract addresses instead of inheriting TestBaseMarketIsolated state
 contract MockSolver is SolverBase {
     fallback() external payable {}
     receive() external payable {}
 
-    constructor(address weth, address atlas) SolverBase(weth, atlas, msg.sender) {}
+    address[] borrowers;
 
-    function solve(address collateral, address market) external pure {
-        // Mock function - intentionally empty
+    // Store necessary contract references
+    BorrowableCToken public immutable borrowableCUSDC;
+    BorrowableCToken public immutable borrowableCDAI;
+    IERC20 public immutable usdc;
+    IERC20 public immutable dai;
+    MarketManagerIsolated public immutable marketManagerIsolated;
+    IOracleManager public immutable oracleManager;
+
+    constructor(
+        address weth,
+        address atlas,
+        address _borrowableCUSDC,
+        address _borrowableCDAI,
+        address _usdc,
+        address _dai,
+        address _marketManagerIsolated,
+        address _oracleManager,
+        address _user1
+    ) SolverBase(weth, atlas, msg.sender) {
+        borrowableCUSDC = BorrowableCToken(_borrowableCUSDC);
+        borrowableCDAI = BorrowableCToken(_borrowableCDAI);
+        usdc = IERC20(_usdc);
+        dai = IERC20(_dai);
+        marketManagerIsolated = MarketManagerIsolated(_marketManagerIsolated);
+        oracleManager = IOracleManager(_oracleManager);
+        borrowers.push(_user1);
+    }
+
+    function solve(address collateral, address market) external {
+        MarketManagerIsolated marketManager = MarketManagerIsolated(market);
+
+        // IDENTICAL: Validate transient liquidation config was set correctly (reference file lines 80-86)
+        (address storedCollateral, uint256 storedIncentive, uint256 storedCloseFactor) =
+            marketManager.getTransientLiquidationConfig();
+
+        require(storedCollateral == collateral, "MockSolver: collateral mismatch");
+        require(storedIncentive == 0, "Incentive should be stored as 0 to signal protocol-derived");
+        require(storedCloseFactor == 0, "Close factor should be stored as 0 to signal protocol-derived");
+
+        // DIFFERENCE: Solver already has USDC from setUp(), just approve (reference file line 74)
+        // NOTE: _prepareUSDC() removed - solver receives USDC in test setUp()
+        usdc.approve(address(borrowableCUSDC), 1000e6);
+
+        address user1 = borrowers[0];
+
+        // IDENTICAL: Get balances before liquidation (reference file lines 99-100)
+        uint256 debtBefore = borrowableCUSDC.debtBalanceUpdated(user1);
+        uint256 collateralBefore = borrowableCDAI.balanceOf(user1);
+
+        uint256 expectedMaxDebtRepaid;
+        uint256 expectedCollateralSeized;
+        {
+            // IDENTICAL: Get protocol liquidation config (reference file lines 105-107)
+            (uint256 liqIncBase, uint256 liqIncCurve, , , uint256 closeFactorBase, uint256 closeFactorCurve,,)
+                = marketManagerIsolated.liquidationConfig(address(borrowableCDAI));
+
+            // IDENTICAL: Get lFactor for borrower (reference file line 111)
+            (, , , uint256 lFactor) = _liquidationValuesOfHelper(marketManagerIsolated, user1);
+
+            // IDENTICAL: Calculate expected close factor (reference file line 123)
+            uint256 expectedCloseFactor = closeFactorBase + ((closeFactorCurve * lFactor) / 1e18);
+
+            // IDENTICAL: Calculate expected liquidation incentive (reference file line 126)
+            uint256 expectedLiqIncentive = liqIncBase + ((liqIncCurve * lFactor) / 1e18);
+
+            // IDENTICAL: Calculate expected max debt repaid (reference file line 129)
+            expectedMaxDebtRepaid = (debtBefore * expectedCloseFactor) / 10000;
+
+            // IDENTICAL: Calculate expected collateral seized (reference file lines 132-137)
+            expectedCollateralSeized = _calculateExpectedCollateralSeized(
+                expectedMaxDebtRepaid,
+                expectedLiqIncentive,
+                address(borrowableCDAI),
+                address(borrowableCUSDC)
+            );
+        }
+
+        // IDENTICAL: Execute liquidation (reference file line 141)
+        borrowableCUSDC.liquidate(borrowers, address(borrowableCDAI));
+
+        // IDENTICAL: Get balances after liquidation (reference file lines 146-151)
+        uint256 debtAfter = borrowableCUSDC.debtBalanceUpdated(user1);
+        uint256 collateralAfter = borrowableCDAI.balanceOf(user1);
+
+        uint256 debtRepaid = debtBefore - debtAfter;
+        uint256 collateralSeized = collateralBefore - collateralAfter;
+
+        // IDENTICAL: Verify debt repaid matches expected (reference file lines 157-158)
+        require(debtRepaid == expectedMaxDebtRepaid,
+            "Debt repaid must exactly match expected value from protocol-derived close factor");
+
+        // IDENTICAL: Verify collateral seized matches expected (reference file lines 162-163)
+        require(collateralSeized == expectedCollateralSeized,
+            "Collateral seized must exactly match expected value from protocol-derived liquidation incentive");
+    }
+
+    // IDENTICAL: Helper function to calculate expected collateral seized (reference file lines 177-210)
+    function _calculateExpectedCollateralSeized(
+        uint256 debtRepaid,
+        uint256 liqIncentive,
+        address collateralToken,
+        address debtToken
+    ) internal returns (uint256) {
+        // IDENTICAL: Get prices (reference file lines 184-185)
+        (uint256 collateralTokenPrice, uint256 debtTokenPrice) =
+            oracleManager.getPriceIsolatedPair(collateralToken, debtToken, 2);
+
+        // IDENTICAL: Get decimals (reference file lines 188-189)
+        uint256 collateralTokenDecimals = 10 ** borrowableCDAI.decimals();
+        uint256 debtTokenDecimals = 10 ** borrowableCUSDC.decimals();
+
+        // IDENTICAL: Calculate debtToCollateral (reference file lines 191-202)
+        // debtToCollateral = (((liqInc * debtPrice * WAD_SQUARED_BPS_OFFSET) / collateralPrice) * collateralDecimals) / debtDecimals
+        uint256 temp = FixedPointMathLib.mulDiv(
+            FixedPointMathLib.mulDiv(liqIncentive, debtTokenPrice, 1),
+            WAD_SQUARED_BPS_OFFSET,
+            collateralTokenPrice
+        );
+        uint256 debtToCollateral = FixedPointMathLib.mulDiv(
+            temp,
+            collateralTokenDecimals,
+            debtTokenDecimals
+        );
+
+        // IDENTICAL: Calculate expected collateral seized (reference file lines 205-209)
+        return FixedPointMathLib.mulDiv(
+            debtRepaid,
+            debtToCollateral,
+            WAD_SQUARED
+        );
+    }
+
+    // Helper function copied from TestBaseMarketIsolated to calculate lFactor
+    function _liquidationValuesOfHelper(
+        MarketManagerIsolated mm,
+        address account
+    ) internal returns (
+        uint256 cSoft,
+        uint256 cHard,
+        uint256 debt,
+        uint256 lFactor
+    ) {
+        address[] memory assets = mm.assetsOf(account);
+        (AccountSnapshot[] memory snapshots, uint256[] memory prices, uint256 numAssets) =
+            oracleManager.getPricesForMarket(account, assets, 2);
+
+        for (uint256 i; i < numAssets; ++i) {
+            AccountSnapshot memory snap = snapshots[i];
+
+            if (snap.isCollateral) {
+                (, uint256 collReqSoft, uint256 collReqHard) = mm.collConfig(snap.asset);
+                uint256 assetValue = FixedPointMathLib.mulDiv(
+                    snap.collateralPosted,
+                    prices[i],
+                    10 ** snap.decimals
+                ) * BPS;
+
+                cSoft += assetValue / collReqSoft;
+                cHard += assetValue / collReqHard;
+            } else {
+                if (snap.debtBalance > 0) {
+                    debt += FixedPointMathLib.mulDivUp(
+                        snap.debtBalance,
+                        prices[i],
+                        10 ** snap.decimals
+                    );
+                }
+            }
+        }
+
+        uint256 auctionBuffer = mm.AUCTION_BUFFER();
+        if (auctionBuffer != 0) {
+            cSoft = FixedPointMathLib.mulDiv(cSoft, auctionBuffer, BPS);
+            cHard = FixedPointMathLib.mulDiv(cHard, auctionBuffer, BPS);
+        }
+
+        if (cSoft >= debt) {
+            lFactor = 0;
+        } else if (debt >= cHard) {
+            lFactor = WAD;
+        } else {
+            lFactor = FixedPointMathLib.mulDivUp(debt - cSoft, WAD, cHard - cSoft);
+        }
     }
 
     function solveRevert(address collateral, address market) external pure {
@@ -877,6 +995,14 @@ contract MockSolverWithCollateralMismatch is SolverBase, TestBaseMarketIsolated 
     }
 
     function solve(address collateral, address market) external {
+        // Validate transient liquidation config was set correctly by preSolverCall
+        (address storedCollateral, uint256 storedIncentive, uint256 storedCloseFactor) =
+            marketManagerIsolated.getTransientLiquidationConfig();
+
+        require(storedCollateral == collateral, "MockSolverWithCollateralMismatch: collateral mismatch in config");
+        require(storedIncentive == 0, "MockSolverWithCollateralMismatch: incentive should be 0");
+        require(storedCloseFactor == 0, "MockSolverWithCollateralMismatch: closeFactor should be 0");
+
         // The solver data has 'collateral' (which got unlocked in preSolverCall)
         // But we'll try to liquidate 'wrongCollateralToLiquidate' instead
         // This should trigger the _UNAUTHORIZED_LIQUIDATION_SELECTOR in _checkLiquidationConfig

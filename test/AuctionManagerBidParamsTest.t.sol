@@ -10,7 +10,6 @@ import {ICentralRegistry} from "contracts/interfaces/ICentralRegistry.sol";
 contract AuctionManagerBidParamsTest is BaseTest, TestBaseMarketIsolated {
     AuctionManagerTestWrapper public dappControlWrapper;
 
-    address public constant MOCK_CENTRAL_REGISTRY = address(0x1234);
     uint256 public constant OEV_SHARE_BUNDLER = 2000; // 20%
     uint256 public constant OEV_SHARE_FASTLANE = 1000; // 10%
     address public constant OEV_ALLOCATION_DESTINATION_FASTLANE = address(0x4111);
