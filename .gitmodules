@@ -7,3 +7,4 @@
 [submodule "lib/curvance-contracts"]
 	path = lib/curvance-contracts
 	url = https://github.com/curvance/curvance-contracts
+	branch = final-changes
