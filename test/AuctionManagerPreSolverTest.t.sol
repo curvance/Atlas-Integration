@@ -327,8 +327,8 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             expectedResult // PreSolverFailed
         );
 
-        // Expect MetacallResult with solverSuccessful = false
-        vm.expectEmit(true, true, true, false, address(atlas));
+        // Expect MetacallResult - only checking indexed params (bundler, user)
+        vm.expectEmit(true, true, false, false, address(atlas));
         emit AtlasEvents.MetacallResult(
             bundler,
             userOpSigner,
@@ -421,8 +421,8 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             expectedResult // SolverOpReverted
         );
 
-        // Expect MetacallResult with solverSuccessful = false
-        vm.expectEmit(true, true, true, false, address(atlas));
+        // Expect MetacallResult - only checking indexed params (bundler, user)
+        vm.expectEmit(true, true, false, false, address(atlas));
         emit AtlasEvents.MetacallResult(
             bundler,
             userOpSigner,
@@ -501,14 +501,14 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             expectedResult // PreSolverFailed
         );
 
-        // Expect MetacallResult with solverSuccessful = false
-        vm.expectEmit(true, true, true, false, address(atlas));
+        // Expect MetacallResult - only checking indexed params (bundler, user)
+        vm.expectEmit(true, true, false, false, address(atlas));
         emit AtlasEvents.MetacallResult(
             bundler,
             userOpSigner,
             false, // solverSuccessful = false (no successful solvers)
-            0, // ethPaidToBundler (will be some gas refund amount)
-            0 // netGasSurcharge (will be some gas amount)
+            0, // ethPaidToBundler
+            0 // netGasSurcharge
         );
 
         vm.startBroadcast(bundlerPK);
@@ -586,8 +586,8 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             expectedResult // PreSolverFailed
         );
 
-        // Expect MetacallResult with solverSuccessful = false
-        vm.expectEmit(true, true, true, false, address(atlas));
+        // Expect MetacallResult - only checking indexed params (bundler, user)
+        vm.expectEmit(true, true, false, false, address(atlas));
         emit AtlasEvents.MetacallResult(
             bundler,
             userOpSigner,
@@ -633,6 +633,39 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         vm.deal(bundler, 2 ether);
         vm.txGasPrice(1 gwei);
 
+        // Record AuctionManager balance before metacall
+        uint256 auctionManagerBalanceBefore = address(auctionManager_).balance;
+
+        // Track solver collateral balance before metacall
+        uint256 solverCollBefore = borrowableCDAI.balanceOf(address(solver));
+
+        // Track user debt balance and lFactor before metacall (needed for expected collateral calculation)
+        // All liquidation state must be captured BEFORE metacall since user position changes after liquidation
+        uint256 user1DebtBefore = borrowableCUSDC.debtBalanceUpdated(user1);
+        (, , , uint256 user1LFactorBefore) = _liquidationValuesOfHelper(marketManagerIsolated, user1);
+
+        // ============================================
+        // PART 1: WITHOUT AUCTION - Should FAIL
+        // ============================================
+
+        // Try to liquidate WITHOUT auction setup (no unlock, no transient config)
+        address[] memory borrowersToLiquidate = new address[](1);
+        borrowersToLiquidate[0] = user1;
+
+        // CRITICAL CURVANCE VALIDATION: Should fail because user is (barely) healthy
+        // The solver contract calls liquidate directly, not via Atlas
+        vm.prank(solverOneEOA);
+        vm.expectRevert(abi.encodeWithSignature("MarketManager__NoLiquidationAvailable()"));
+        solver.callLiquidateDirectly(
+            address(borrowableCUSDC),
+            borrowersToLiquidate,
+            address(borrowableCDAI)
+        );
+
+        // ============================================
+        // PART 2: WITH AUCTION - Should SUCCEED
+        // ============================================
+
         // Expect the oracle update to happen successfully (before solver execution)
         vm.expectEmit(true, false, false, true, address(wrapperEntrypoint));
         emit ChainlinkWrapperEntrypoint.BatchUpdateExecuted(
@@ -654,12 +687,16 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
             0 // result = 0 (no failure flags)
         );
 
-        // Expect MetacallResult with solverSuccessful = false (bid validation fails)
-        vm.expectEmit(true, true, true, false, address(atlas));
+        // Expect revenue to be allocated to AuctionManager
+        vm.expectEmit(true, false, false, true, address(auctionManager_));
+        emit AuctionManager.RevenueAllocated(solverBidAmount);
+
+        // Expect MetacallResult - only checking indexed params (bundler, user), not gas values
+        vm.expectEmit(true, true, false, false, address(atlas));
         emit AtlasEvents.MetacallResult(
             bundler,
             userOpSigner,
-            false, // solverSuccessful = false (even though solver executed, bid validation fails)
+            false, // solverSuccessful = false (always false in this DApp config, not a failure)
             0, // ethPaidToBundler
             0 // netGasSurcharge
         );
@@ -675,7 +712,38 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         assertEq(success, true, "metacall should execute successfully");
 
         bool auctionWon = abi.decode(returnData, (bool));
-        assertEq(auctionWon, false, "auction won should be false (as per existing test pattern)");
+        assertEq(auctionWon, false, "auctionWon = false (DApp config), but revenue is allocated");
+
+        // Verify solver received exact amount of seized collateral
+        uint256 solverCollAfter = borrowableCDAI.balanceOf(address(solver));
+
+        // Calculate expected debt repaid and liquidation incentive for user1 using pre-captured values
+        (uint256 liqIncBase, uint256 liqIncCurve, , , uint256 closeFactorBase, uint256 closeFactorCurve,,) =
+            marketManagerIsolated.liquidationConfig(address(borrowableCDAI));
+        uint256 expectedCloseFactor = closeFactorBase + ((closeFactorCurve * user1LFactorBefore) / 1e18);
+        uint256 expectedMaxDebtRepaid = (user1DebtBefore * expectedCloseFactor) / 10000;
+        uint256 expectedLiqIncentive = liqIncBase + ((liqIncCurve * user1LFactorBefore) / 1e18);
+
+        uint256 expectedCollateral = _calculateExpectedCollateralSeized(
+            expectedMaxDebtRepaid,
+            expectedLiqIncentive,
+            address(borrowableCDAI),
+            address(borrowableCUSDC)
+        );
+
+        assertEq(
+            solverCollAfter - solverCollBefore,
+            expectedCollateral,
+            "solver collateral increase doesn't match expected seized amount"
+        );
+
+        // Verify AuctionManager balance increased by solverBidAmount
+        uint256 auctionManagerBalanceAfter = address(auctionManager_).balance;
+        assertEq(
+            auctionManagerBalanceAfter,
+            auctionManagerBalanceBefore + solverBidAmount,
+            "AuctionManager should have received solver bid amount as revenue"
+        );
     }
 
     // ========================================
@@ -776,6 +844,42 @@ contract AuctionManagerPreSolverTest is BaseTest, AtlasErrors, TestBaseMarketIso
         dappOp.signature = abi.encodePacked(sig.r, sig.s, sig.v);
         return dappOp;
     }
+
+    // Helper function to calculate collateral seized based on debt repaid and liquidation incentive
+    function _calculateExpectedCollateralSeized(
+        uint256 debtRepaid,
+        uint256 liqIncentive,
+        address collateralToken,
+        address debtToken
+    ) internal returns (uint256) {
+        // IDENTICAL: Get prices (reference file lines 184-185)
+        (uint256 collateralTokenPrice, uint256 debtTokenPrice) =
+            oracleManager.getPriceIsolatedPair(collateralToken, debtToken, 2);
+
+        // IDENTICAL: Get decimals (reference file lines 188-189)
+        uint256 collateralTokenDecimals = 10 ** borrowableCDAI.decimals();
+        uint256 debtTokenDecimals = 10 ** borrowableCUSDC.decimals();
+
+        // IDENTICAL: Calculate debtToCollateral (reference file lines 191-202)
+        // debtToCollateral = (((liqInc * debtPrice * WAD_SQUARED_BPS_OFFSET) / collateralPrice) * collateralDecimals) / debtDecimals
+        uint256 temp = FixedPointMathLib.mulDiv(
+            FixedPointMathLib.mulDiv(liqIncentive, debtTokenPrice, 1),
+            WAD_SQUARED_BPS_OFFSET,
+            collateralTokenPrice
+        );
+        uint256 debtToCollateral = FixedPointMathLib.mulDiv(
+            temp,
+            collateralTokenDecimals,
+            debtTokenDecimals
+        );
+
+        // IDENTICAL: Calculate expected collateral seized (reference file lines 205-209)
+        return FixedPointMathLib.mulDiv(
+            debtRepaid,
+            debtToCollateral,
+            WAD_SQUARED
+        );
+    }
 }
 
 // Reuse the MockSolver from the main test file
@@ -814,6 +918,16 @@ contract MockSolver is SolverBase {
         borrowers.push(_user1);
     }
 
+    // Helper function to call liquidate directly without auction setup
+    function callLiquidateDirectly(
+        address debtToken,
+        address[] calldata borrowersToliquidate,
+        address collateralToken
+    ) external {
+        usdc.approve(debtToken, type(uint256).max);
+        BorrowableCToken(debtToken).liquidate(borrowersToliquidate, collateralToken);
+    }
+
     function solve(address collateral, address market) external {
         MarketManagerIsolated marketManager = MarketManagerIsolated(market);
 
@@ -844,6 +958,15 @@ contract MockSolver is SolverBase {
 
             // IDENTICAL: Get lFactor for borrower (reference file line 111)
             (, , , uint256 lFactor) = _liquidationValuesOfHelper(marketManagerIsolated, user1);
+
+            // VERIFY AUCTION BUFFER WAS APPLIED TO LFACTOR CALCULATION
+            uint256 auctionBuffer = marketManagerIsolated.AUCTION_BUFFER();
+            require(auctionBuffer == 9950, "Auction buffer must be 9950 (50bps)");
+
+            // VERIFY CURVE VALUES ARE NON-ZERO (protocol-derived actually used curves)
+            require(liqIncCurve > 0, "CURVANCE BUG: liqIncCurve is zero, protocol-derived won't work");
+            require(closeFactorCurve > 0, "CURVANCE BUG: closeFactorCurve is zero, protocol-derived won't work");
+            require(lFactor > 0, "CURVANCE BUG: lFactor is zero, user shouldn't be liquidatable");
 
             // IDENTICAL: Calculate expected close factor (reference file line 123)
             uint256 expectedCloseFactor = closeFactorBase + ((closeFactorCurve * lFactor) / 1e18);
@@ -880,6 +1003,11 @@ contract MockSolver is SolverBase {
         // IDENTICAL: Verify collateral seized matches expected (reference file lines 162-163)
         require(collateralSeized == expectedCollateralSeized,
             "Collateral seized must exactly match expected value from protocol-derived liquidation incentive");
+
+        // Verify user is now healthy after liquidation
+        (, uint256 maxDebtAfter, uint256 debtAfterLiq) = marketManagerIsolated.statusOf(user1);
+        require(debtAfterLiq <= maxDebtAfter,
+            "CURVANCE BUG: User must be healthy after liquidation");
     }
 
     // IDENTICAL: Helper function to calculate expected collateral seized (reference file lines 177-210)
@@ -1030,7 +1158,7 @@ contract MockSolverWithCollateralMismatch is SolverBase, TestBaseMarketIsolated 
 
         mockDaiFeed.setMockAnswer(1e7);
 
-        address[] memory borrowers;
+        address[] memory borrowers = new address[](1);
         borrowers[0] = user1;
 
         // Now attempt liquidation with the WRONG collateral (not what was unlocked)
