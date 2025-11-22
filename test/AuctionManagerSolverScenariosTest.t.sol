@@ -314,14 +314,14 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
     }
 
     // Initialization test
-    // function testInitialization() public view {
-    //     assertEq(auctionManager_.fastlaneRevenueDestination(), OEV_ALLOCATION_DESTINATION_FASTLANE);
-    //     assertEq(auctionManager_.curvanceRevenueDestination(), OEV_ALLOCATION_DESTINATION_PROTOCOL);
-    //     assertEq(auctionManager_.fastlaneSplitBPS(), OEV_SHARE_FASTLANE);
-    //     assertEq(auctionManager_.solverGasLimit(), SOLVER_GAS_LIMIT);
-    //     assertEq(auctionManager_.authorizedUserOpSigner(), userOpSigner);
-    //     assertEq(address(auctionManager_.CENTRAL_REGISTRY()), address(centralRegistry));
-    // }
+    function testInitialization() public view {
+        assertEq(auctionManager_.fastlaneRevenueDestination(), OEV_ALLOCATION_DESTINATION_FASTLANE);
+        assertEq(auctionManager_.curvanceRevenueDestination(), OEV_ALLOCATION_DESTINATION_PROTOCOL);
+        assertEq(auctionManager_.fastlaneSplitBPS(), OEV_SHARE_FASTLANE);
+        assertEq(auctionManager_.solverGasLimit(), SOLVER_GAS_LIMIT);
+        assertEq(auctionManager_.authorizedUserOpSigner(), userOpSigner);
+        assertEq(address(auctionManager_.CENTRAL_REGISTRY()), address(centralRegistry));
+    }
 
     function buildUserOperation(uint256 signerPK) internal view returns (UserOperation memory) {
         // Encode the batch update call with the entrypoint's batchUpdatePriceEarly
@@ -364,13 +364,29 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
         uint256 bidAmount,
         address collateral,
         address market,
-        bool isReverting
+        bool isReverting,
+        bool isPreSolverOpFailingUnlistedCollateral,
+        bool isSolverOpFailingMismatchedCollateral,
+        bool targetsSameUserAsSolver1,
+        address borrower
     ) internal view returns (SolverOperation memory) {
+        // Determine which collateral to use based on failure flags
+        address collateralToUse;
+        if (isPreSolverOpFailingUnlistedCollateral) {
+            // Use unlistedToken to cause preSolver to fail with unlisted collateral error
+            collateralToUse = unlistedToken;
+        } else if (isSolverOpFailingMismatchedCollateral) {
+            // Use debt token instead of collateral to cause preSolver to fail with mismatch error
+            collateralToUse = address(borrowableCUSDC);
+        } else {
+            collateralToUse = collateral;
+        }
+
         bytes memory data;
         if (isReverting) {
-            data = abi.encodeWithSelector(solver.solveRevert.selector, collateral, market);
+            data = abi.encodeWithSignature("solveRevert(address,address,address)", borrower, collateralToUse, market);
         } else {
-            data = abi.encodeWithSelector(solver.solve.selector, collateral, market);
+            data = abi.encodeWithSignature("solve(address,address,address)", borrower, collateralToUse, market);
         }
 
         address solverEoa = vm.addr(solverPK);
@@ -423,8 +439,10 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
         uint256 testPenalty;
         address collateral;
         address market;
-        bool isPreSolverOpFailing;
+        bool isPreSolverOpFailingUnlistedCollateral;
+        bool isSolverOpFailingMismatchedCollateral;
         bool isReverting;
+        bool targetsSameUserAsSolver1;
     }
 
     function threeSolverTestTemplate(
@@ -443,7 +461,11 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
             solverOne.bidAmount,
             solverOne.collateral,
             solverOne.market,
-            solverOne.isReverting
+            solverOne.isReverting,
+            solverOne.isPreSolverOpFailingUnlistedCollateral,
+            solverOne.isSolverOpFailingMismatchedCollateral,
+            solverOne.targetsSameUserAsSolver1,
+            user1  // Solver1 always targets user1
         );
         SolverOperation memory solverOp2 = buildSolverOperation(
             solverTwoPK,
@@ -452,7 +474,11 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
             solverTwo.bidAmount,
             solverTwo.collateral,
             solverTwo.market,
-            solverTwo.isReverting
+            solverTwo.isReverting,
+            solverTwo.isPreSolverOpFailingUnlistedCollateral,
+            solverTwo.isSolverOpFailingMismatchedCollateral,
+            solverTwo.targetsSameUserAsSolver1,
+            solverTwo.targetsSameUserAsSolver1 ? user1 : user2  // Target user1 if race condition, else user2
         );
         SolverOperation memory solverOp3 = buildSolverOperation(
             solverThreePK,
@@ -461,7 +487,11 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
             solverThree.bidAmount,
             solverThree.collateral,
             solverThree.market,
-            solverThree.isReverting
+            solverThree.isReverting,
+            solverThree.isPreSolverOpFailingUnlistedCollateral,
+            solverThree.isSolverOpFailingMismatchedCollateral,
+            solverThree.targetsSameUserAsSolver1,
+            solverThree.targetsSameUserAsSolver1 ? user1 : user3  // Target user1 if race condition, else user3
         );
         SolverOperation[] memory solverOps = new SolverOperation[](3);
         solverOps[0] = solverOp1;
@@ -473,20 +503,20 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
         uint256 fastlaneBalanceBefore = address(OEV_ALLOCATION_DESTINATION_FASTLANE).balance;
         uint256 protocolBalanceBefore = address(OEV_ALLOCATION_DESTINATION_PROTOCOL).balance;
 
-        uint256 solverOneBidPaid = solverOne.isReverting || solverOne.isPreSolverOpFailing ? 0 : solverOne.bidAmount;
-        uint256 solverTwoBidPaid = solverTwo.isReverting || solverTwo.isPreSolverOpFailing ? 0 : solverTwo.bidAmount;
+        uint256 solverOneBidPaid = solverOne.isReverting || solverOne.isPreSolverOpFailingUnlistedCollateral || solverOne.isSolverOpFailingMismatchedCollateral ? 0 : solverOne.bidAmount;
+        uint256 solverTwoBidPaid = solverTwo.isReverting || solverTwo.isPreSolverOpFailingUnlistedCollateral || solverTwo.isSolverOpFailingMismatchedCollateral ? 0 : solverTwo.bidAmount;
         uint256 solverThreeBidPaid =
-            solverThree.isReverting || solverThree.isPreSolverOpFailing ? 0 : solverThree.bidAmount;
+            solverThree.isReverting || solverThree.isPreSolverOpFailingUnlistedCollateral || solverThree.isSolverOpFailingMismatchedCollateral ? 0 : solverThree.bidAmount;
 
-        uint256 solverOneResult = solverOne.isPreSolverOpFailing
+        uint256 solverOneResult = solverOne.isPreSolverOpFailingUnlistedCollateral
             ? (1 << uint256(SolverOutcome.PreSolverFailed))
-            : (solverOne.isReverting ? (1 << uint256(SolverOutcome.SolverOpReverted)) : 0);
-        uint256 solverTwoResult = solverTwo.isPreSolverOpFailing
+            : ((solverOne.isReverting || solverOne.isSolverOpFailingMismatchedCollateral) ? (1 << uint256(SolverOutcome.SolverOpReverted)) : 0);
+        uint256 solverTwoResult = solverTwo.isPreSolverOpFailingUnlistedCollateral
             ? (1 << uint256(SolverOutcome.PreSolverFailed))
-            : (solverTwo.isReverting ? (1 << uint256(SolverOutcome.SolverOpReverted)) : 0);
-        uint256 solverThreeResult = solverThree.isPreSolverOpFailing
+            : ((solverTwo.isReverting || solverTwo.isSolverOpFailingMismatchedCollateral) ? (1 << uint256(SolverOutcome.SolverOpReverted)) : 0);
+        uint256 solverThreeResult = solverThree.isPreSolverOpFailingUnlistedCollateral
             ? (1 << uint256(SolverOutcome.PreSolverFailed))
-            : (solverThree.isReverting ? (1 << uint256(SolverOutcome.SolverOpReverted)) : 0);
+            : ((solverThree.isReverting || solverThree.isSolverOpFailingMismatchedCollateral) ? (1 << uint256(SolverOutcome.SolverOpReverted)) : 0);
 
         uint256 solverOneBondedBefore = atlas.balanceOfBonded(address(solverOneEOA));
         uint256 solverTwoBondedBefore = atlas.balanceOfBonded(address(solverTwoEOA));
@@ -508,6 +538,11 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
         uint256 user1DebtBefore = borrowableCUSDC.debtBalanceUpdated(user1);
         uint256 user2DebtBefore = borrowableCUSDC.debtBalanceUpdated(user2);
         uint256 user3DebtBefore = borrowableCUSDC.debtBalanceUpdated(user3);
+
+        // Track user collateral balances before metacall (to verify failed solvers don't liquidate)
+        uint256 user1CollBefore = borrowableCDAI.balanceOf(user1);
+        uint256 user2CollBefore = borrowableCDAI.balanceOf(user2);
+        uint256 user3CollBefore = borrowableCDAI.balanceOf(user3);
 
         (, , , uint256 user1LFactorBefore) = _liquidationValuesOfHelper(marketManagerIsolated, user1);
         (, , , uint256 user2LFactorBefore) = _liquidationValuesOfHelper(marketManagerIsolated, user2);
@@ -571,8 +606,8 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
             address(auctionManager_),
             address(0),
             solverOne.bidAmount,
-            !solverOne.isPreSolverOpFailing,
-            !solverOne.isReverting && !solverOne.isPreSolverOpFailing,
+            !solverOne.isPreSolverOpFailingUnlistedCollateral,
+            !solverOne.isReverting && !solverOne.isPreSolverOpFailingUnlistedCollateral && !solverOne.isSolverOpFailingMismatchedCollateral,
             solverOneResult
         );
         vm.expectEmit(address(atlas));
@@ -582,8 +617,8 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
             address(auctionManager_),
             address(0),
             solverTwo.bidAmount,
-            !solverTwo.isPreSolverOpFailing,
-            !solverTwo.isReverting && !solverTwo.isPreSolverOpFailing,
+            !solverTwo.isPreSolverOpFailingUnlistedCollateral,
+            !solverTwo.isReverting && !solverTwo.isPreSolverOpFailingUnlistedCollateral && !solverTwo.isSolverOpFailingMismatchedCollateral,
             solverTwoResult
         );
         vm.expectEmit(address(atlas));
@@ -593,8 +628,8 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
             address(auctionManager_),
             address(0),
             solverThree.bidAmount,
-            !solverThree.isPreSolverOpFailing,
-            !solverThree.isReverting && !solverThree.isPreSolverOpFailing,
+            !solverThree.isPreSolverOpFailingUnlistedCollateral,
+            !solverThree.isReverting && !solverThree.isPreSolverOpFailingUnlistedCollateral && !solverThree.isSolverOpFailingMismatchedCollateral,
             solverThreeResult
         );
         if (solverOneBidPaid + solverTwoBidPaid + solverThreeBidPaid > 0) {
@@ -654,8 +689,46 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
         assertLt(atlas.balanceOfBonded(address(solverTwoEOA)), solverTwoBondedBefore);
         assertLt(atlas.balanceOfBonded(address(solverThreeEOA)), solverThreeBondedBefore);
 
+        // CRITICAL: Verify failed solvers didn't liquidate their target users
+        if (solverOne.isReverting || solverOne.isPreSolverOpFailingUnlistedCollateral || solverOne.isSolverOpFailingMismatchedCollateral) {
+            assertEq(
+                borrowableCDAI.balanceOf(user1),
+                user1CollBefore,
+                "Failed solver 1 changed user1 collateral - liquidation should not have occurred"
+            );
+            assertEq(
+                borrowableCUSDC.debtBalanceUpdated(user1),
+                user1DebtBefore,
+                "Failed solver 1 changed user1 debt - liquidation should not have occurred"
+            );
+        }
+        if (solverTwo.isReverting || solverTwo.isPreSolverOpFailingUnlistedCollateral || solverTwo.isSolverOpFailingMismatchedCollateral) {
+            assertEq(
+                borrowableCDAI.balanceOf(user2),
+                user2CollBefore,
+                "Failed solver 2 changed user2 collateral - liquidation should not have occurred"
+            );
+            assertEq(
+                borrowableCUSDC.debtBalanceUpdated(user2),
+                user2DebtBefore,
+                "Failed solver 2 changed user2 debt - liquidation should not have occurred"
+            );
+        }
+        if (solverThree.isReverting || solverThree.isPreSolverOpFailingUnlistedCollateral || solverThree.isSolverOpFailingMismatchedCollateral) {
+            assertEq(
+                borrowableCDAI.balanceOf(user3),
+                user3CollBefore,
+                "Failed solver 3 changed user3 collateral - liquidation should not have occurred"
+            );
+            assertEq(
+                borrowableCUSDC.debtBalanceUpdated(user3),
+                user3DebtBefore,
+                "Failed solver 3 changed user3 debt - liquidation should not have occurred"
+            );
+        }
+
         // Verify each solver received exact amount of seized collateral (only for successful solvers)
-        if (!solverOne.isReverting && !solverOne.isPreSolverOpFailing) {
+        if (!solverOne.isReverting && !solverOne.isPreSolverOpFailingUnlistedCollateral && !solverOne.isSolverOpFailingMismatchedCollateral) {
             uint256 solver1CollAfter = borrowableCDAI.balanceOf(address(solver));
 
             // Calculate expected debt repaid and liquidation incentive for user1 using pre-captured values
@@ -678,7 +751,7 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
                 "solver1 collateral increase doesn't match expected seized amount"
             );
         }
-        if (!solverTwo.isReverting && !solverTwo.isPreSolverOpFailing) {
+        if (!solverTwo.isReverting && !solverTwo.isPreSolverOpFailingUnlistedCollateral && !solverTwo.isSolverOpFailingMismatchedCollateral) {
             uint256 solver2CollAfter = borrowableCDAI.balanceOf(address(solver2));
 
             // Calculate expected debt repaid and liquidation incentive for user2 using pre-captured values
@@ -701,7 +774,7 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
                 "solver2 collateral increase doesn't match expected seized amount"
             );
         }
-        if (!solverThree.isReverting && !solverThree.isPreSolverOpFailing) {
+        if (!solverThree.isReverting && !solverThree.isPreSolverOpFailingUnlistedCollateral && !solverThree.isSolverOpFailingMismatchedCollateral) {
             uint256 solver3CollAfter = borrowableCDAI.balanceOf(address(solver3));
 
             // Calculate expected debt repaid and liquidation incentive for user3 using pre-captured values
@@ -743,7 +816,9 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
                 collateral: address(borrowableCDAI),
                 market: address(marketManagerIsolated),
                 isReverting: false,
-                isPreSolverOpFailing: false
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
             }),
             SolverBidPattern({
                 bidAmount: solverBidAmount * 2,
@@ -751,7 +826,9 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
                 collateral: address(borrowableCDAI),
                 market: address(marketManagerIsolated),
                 isReverting: false,
-                isPreSolverOpFailing: false
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
             }),
             SolverBidPattern({
                 bidAmount: solverBidAmount * 3,
@@ -759,7 +836,201 @@ contract AuctionManagerSolverScenariosTest is BaseTest, AtlasErrors, TestBaseMar
                 collateral: address(borrowableCDAI),
                 market: address(marketManagerIsolated),
                 isReverting: false,
-                isPreSolverOpFailing: false
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
+            })
+        );
+    }
+
+    function testOevAuction_multipleSolvers_oevBids_firstSolverReverts() public {
+        threeSolverTestTemplate(
+            SolverBidPattern({
+                bidAmount: solverBidAmount,
+                testPenalty: solverOpTestPenalty,
+                collateral: address(borrowableCDAI),
+                market: address(marketManagerIsolated),
+                isReverting: true,
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
+            }),
+            SolverBidPattern({
+                bidAmount: solverBidAmount * 2,
+                testPenalty: solverOpTestPenalty,
+                collateral: address(borrowableCDAI),
+                market: address(marketManagerIsolated),
+                isReverting: false,
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
+            }),
+            SolverBidPattern({
+                bidAmount: solverBidAmount * 3,
+                testPenalty: solverOpTestPenalty,
+                collateral: address(borrowableCDAI),
+                market: address(marketManagerIsolated),
+                isReverting: false,
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
+            })
+        );
+    }
+
+    function testOevAuction_multipleSolvers_oevBids_firstPreSolverRevertsUnlostedCollateral() public {
+        threeSolverTestTemplate(
+            SolverBidPattern({
+                bidAmount: solverBidAmount,
+                testPenalty: solverOpTestPenalty,
+                collateral: address(borrowableCDAI),
+                market: address(marketManagerIsolated),
+                isReverting: false,
+                isPreSolverOpFailingUnlistedCollateral: true,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
+            }),
+            SolverBidPattern({
+                bidAmount: solverBidAmount * 2,
+                testPenalty: solverOpTestPenalty,
+                collateral: address(borrowableCDAI),
+                market: address(marketManagerIsolated),
+                isReverting: false,
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
+            }),
+            SolverBidPattern({
+                bidAmount: solverBidAmount * 3,
+                testPenalty: solverOpTestPenalty,
+                collateral: address(borrowableCDAI),
+                market: address(marketManagerIsolated),
+                isReverting: false,
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
+            })
+        );
+    }
+
+    function testOevAuction_multipleSolvers_oevBids_firstPreSolverRevertsMismatchedCollateral() public {
+        threeSolverTestTemplate(
+            SolverBidPattern({
+                bidAmount: solverBidAmount,
+                testPenalty: solverOpTestPenalty,
+                collateral: address(borrowableCDAI),
+                market: address(marketManagerIsolated),
+                isReverting: false,
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: true,
+                targetsSameUserAsSolver1: false
+            }),
+            SolverBidPattern({
+                bidAmount: solverBidAmount * 2,
+                testPenalty: solverOpTestPenalty,
+                collateral: address(borrowableCDAI),
+                market: address(marketManagerIsolated),
+                isReverting: false,
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
+            }),
+            SolverBidPattern({
+                bidAmount: solverBidAmount * 3,
+                testPenalty: solverOpTestPenalty,
+                collateral: address(borrowableCDAI),
+                market: address(marketManagerIsolated),
+                isReverting: false,
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
+            })
+        );
+    }
+
+    /// @notice CRITICAL RACE CONDITION TEST: Multiple solvers target same user
+    /// @dev Tests that when solver1 liquidates user1, solver2's attempt to liquidate same user fails gracefully
+    ///      Expected behavior:
+    ///      - Solver1: Succeeds, liquidates user1 (making user1 healthy)
+    ///      - Solver2: Fails - user1 is now healthy and cannot be liquidated (MarketManager__NoLiquidationAvailable)
+    ///      - Solver3: Succeeds, liquidates user3 normally
+    function testOevAuction_twoSolversTargetSameUser_secondFails() public {
+        threeSolverTestTemplate(
+            // Solver 1: Targets user1, should succeed
+            SolverBidPattern({
+                bidAmount: solverBidAmount,
+                testPenalty: solverOpTestPenalty,
+                collateral: address(borrowableCDAI),
+                market: address(marketManagerIsolated),
+                isReverting: false,
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
+            }),
+            // Solver 2: ALSO targets user1 (race condition), should fail because user1 already liquidated
+            SolverBidPattern({
+                bidAmount: solverBidAmount * 2,
+                testPenalty: solverOpTestPenalty,
+                collateral: address(borrowableCDAI),
+                market: address(marketManagerIsolated),
+                isReverting: true,  // Will fail because user1 is healthy after solver1
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: true  // RACE CONDITION: Target user1 instead of user2
+            }),
+            // Solver 3: Targets user3, should succeed normally
+            SolverBidPattern({
+                bidAmount: solverBidAmount * 3,
+                testPenalty: solverOpTestPenalty,
+                collateral: address(borrowableCDAI),
+                market: address(marketManagerIsolated),
+                isReverting: false,
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
+            })
+        );
+    }
+
+    /// @notice Tests that healthy users cannot be liquidated even with auction buffer
+    /// @dev Price recovers making all users healthy, all solvers should fail
+    function testOevAuction_userAlreadyHealthy_allSolversFail() public {
+        // Price recovers - all users become healthy
+        mockDaiFeed.setMockAnswer(1e8); // Back to $1.00
+
+        threeSolverTestTemplate(
+            // Solver 1: Will fail - user is healthy
+            SolverBidPattern({
+                bidAmount: solverBidAmount,
+                testPenalty: solverOpTestPenalty,
+                collateral: address(borrowableCDAI),
+                market: address(marketManagerIsolated),
+                isReverting: true,
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
+            }),
+            // Solver 2: Will fail - user is healthy
+            SolverBidPattern({
+                bidAmount: solverBidAmount * 2,
+                testPenalty: solverOpTestPenalty,
+                collateral: address(borrowableCDAI),
+                market: address(marketManagerIsolated),
+                isReverting: true,
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
+            }),
+            // Solver 3: Will fail - user is healthy
+            SolverBidPattern({
+                bidAmount: solverBidAmount * 3,
+                testPenalty: solverOpTestPenalty,
+                collateral: address(borrowableCDAI),
+                market: address(marketManagerIsolated),
+                isReverting: true,
+                isPreSolverOpFailingUnlistedCollateral: false,
+                isSolverOpFailingMismatchedCollateral: false,
+                targetsSameUserAsSolver1: false
             })
         );
     }
@@ -846,7 +1117,7 @@ contract MockSolver is SolverBase {
         BorrowableCToken(debtToken).liquidate(borrowersToliquidate, collateralToken);
     }
 
-    function solve(address collateral, address market) external {
+    function solve(address borrower, address collateral, address market) external {
         MarketManagerIsolated marketManager = MarketManagerIsolated(market);
 
         // Validate transient liquidation config was set correctly
@@ -860,7 +1131,7 @@ contract MockSolver is SolverBase {
         // Solver already has USDC from setUp(), just approve
         usdc.approve(address(borrowableCUSDC), 1000e6);
 
-        address user1 = borrowers[0];
+        address user1 = borrower;
 
         // Get balances before liquidation
         uint256 debtBefore = borrowableCUSDC.debtBalanceUpdated(user1);
@@ -904,7 +1175,9 @@ contract MockSolver is SolverBase {
         }
 
         // Execute liquidation
-        borrowableCUSDC.liquidate(borrowers, address(borrowableCDAI));
+        address[] memory borrowersToLiquidate = new address[](1);
+        borrowersToLiquidate[0] = borrower;
+        borrowableCUSDC.liquidate(borrowersToLiquidate, address(borrowableCDAI));
 
         // Get balances after liquidation
         uint256 debtAfter = borrowableCUSDC.debtBalanceUpdated(user1);
@@ -927,7 +1200,7 @@ contract MockSolver is SolverBase {
             "CURVANCE BUG: User must be healthy after liquidation");
     }
 
-    function solveRevert(address collateral, address market) external pure {
+    function solveRevert(address borrower, address collateral, address market) external pure {
         revert("Atlas OEV is not allowed");
     }
 
@@ -1086,7 +1359,7 @@ contract MockSolverWithCollateralMismatch is SolverBase, TestBaseMarketIsolated 
 
     }
 
-    function solveRevert(address collateral, address market) external pure {
+    function solveRevert(address borrower, address collateral, address market) external pure {
         revert("Atlas OEV is not allowed");
     }
 }
